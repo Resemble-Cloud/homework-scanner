@@ -46,3 +46,10 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# Plugin build artefacts (Gradle + Dart tooling)
+packages/*/build/
+packages/*/.dart_tool/
+packages/*/android/.kotlin/
+packages/*/android/local.properties
+android/.kotlin/
