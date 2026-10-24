@@ -21,6 +21,16 @@ void main() {
         detectionFrameFill: 0.22,
         detectionCoverage: 0.9,
         engineStage: 'capture',
+        candidates: const [
+          QuadCandidate(
+            source: 'paper_outer',
+            quad: [(0.02, 0.02), (0.98, 0.02), (0.98, 0.98), (0.02, 0.98)],
+            score: 0.72,
+            meanProb: 0.82,
+            coverage: 0.99,
+            frameFill: 0.84,
+          ),
+        ],
         createdAt: created,
         processingMs: 3200,
         engineMs: 2100,
@@ -42,7 +52,26 @@ void main() {
       expect(restored.needsReview, isTrue);
       expect(restored.detectionScore, 0.42);
       expect(restored.engineMs, 2100);
+      expect(restored.candidates, hasLength(1));
+      expect(restored.candidates.single.source, 'paper_outer');
+      expect(restored.candidates.single.coverage, 0.99);
+      expect(restored.candidates.single.background, closeTo(0.18, 1e-9));
       expect(restored.createdAt, created);
+    });
+
+    test('Sprint 1/2 旧 JSON 迁移：缺省 candidates 与 shadowFlatten 使用安全默认', () {
+      final restored = ScanPage.fromJson(<String, dynamic>{
+        'id': 'legacy',
+        'originalPath': '/tmp/legacy.jpg',
+        'colorMode': 'AUTO',
+        'status': 'done',
+        'quadSource': 'capture',
+        'needsReview': false,
+        'createdAt': '2026-10-24T12:00:00.000Z',
+      });
+      expect(restored.candidates, isEmpty);
+      expect(restored.shadowFlatten, isTrue);
+      expect(restored.quadSource, QuadSource.capture);
     });
   });
 

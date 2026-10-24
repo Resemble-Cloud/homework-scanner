@@ -6,6 +6,7 @@ import 'package:fairscan_engine/fairscan_engine.dart';
 enum QuadSource {
   import('import'),
   capture('capture'),
+  paperOuter('paper_outer'),
   fallback('default'),
   manual('manual');
 
@@ -21,7 +22,15 @@ enum QuadSource {
   String get label => switch (this) {
     QuadSource.import => 'IMPORT 自动检测',
     QuadSource.capture => 'CAPTURE 自动检测',
+    QuadSource.paperOuter => '纸面外框（保留整张纸面）',
     QuadSource.fallback => '默认四角（整图内缩 2%）',
+    QuadSource.manual => '手动四角',
+  };
+
+  String get shortLabel => switch (this) {
+    QuadSource.import || QuadSource.capture => '检测框',
+    QuadSource.paperOuter => '纸面外框',
+    QuadSource.fallback => '整图 2%',
     QuadSource.manual => '手动四角',
   };
 }
@@ -57,9 +66,11 @@ class ScanPage {
     required this.colorMode,
     required this.status,
     required this.createdAt,
+    this.shadowFlatten = true,
     this.processedPath,
     this.quad,
     this.quadSource = QuadSource.fallback,
+    this.candidates = const <QuadCandidate>[],
     this.needsReview = false,
     this.reviewReason,
     this.detectionScore,
@@ -85,6 +96,7 @@ class ScanPage {
       originalPath: json['originalPath'] as String,
       processedPath: json['processedPath'] as String?,
       colorMode: ScanColorMode.fromWire(json['colorMode'] as String?),
+      shadowFlatten: json['shadowFlatten'] as bool? ?? true,
       status: PageStatus.fromWire(json['status'] as String?),
       quad: rawQuad is List
           ? rawQuad
@@ -95,6 +107,12 @@ class ScanPage {
                 .toList(growable: false)
           : null,
       quadSource: QuadSource.fromWire(json['quadSource'] as String?),
+      candidates:
+          (json['candidates'] as List?)
+              ?.whereType<Map<dynamic, dynamic>>()
+              .map(QuadCandidate.fromMap)
+              .toList(growable: false) ??
+          const <QuadCandidate>[],
       needsReview: json['needsReview'] as bool? ?? false,
       reviewReason: json['reviewReason'] as String?,
       detectionScore: (json['detectionScore'] as num?)?.toDouble(),
@@ -119,11 +137,15 @@ class ScanPage {
   final String originalPath;
   final String? processedPath;
   final ScanColorMode colorMode;
+  final bool shadowFlatten;
   final PageStatus status;
   final List<NormalizedPoint>? quad;
 
   /// The source of the final corners. Persisted for every page.
   final QuadSource quadSource;
+
+  /// Native crop candidates kept so the user can switch after processing.
+  final List<QuadCandidate> candidates;
   final bool needsReview;
   final String? reviewReason;
   final double? detectionScore;
@@ -153,10 +175,12 @@ class ScanPage {
   ScanPage copyWith({
     String? originalPath,
     ScanColorMode? colorMode,
+    bool? shadowFlatten,
     PageStatus? status,
     List<NormalizedPoint>? quad,
     bool clearQuad = false,
     QuadSource? quadSource,
+    List<QuadCandidate>? candidates,
     bool? needsReview,
     String? reviewReason,
     bool clearReviewReason = false,
@@ -187,9 +211,11 @@ class ScanPage {
           ? null
           : (processedPath ?? this.processedPath),
       colorMode: colorMode ?? this.colorMode,
+      shadowFlatten: shadowFlatten ?? this.shadowFlatten,
       status: status ?? this.status,
       quad: clearQuad ? null : (quad ?? this.quad),
       quadSource: quadSource ?? this.quadSource,
+      candidates: candidates ?? this.candidates,
       needsReview: needsReview ?? this.needsReview,
       reviewReason: clearReviewReason
           ? null
@@ -225,9 +251,13 @@ class ScanPage {
     'originalPath': originalPath,
     'processedPath': processedPath,
     'colorMode': colorMode.wireName,
+    'shadowFlatten': shadowFlatten,
     'status': status.name,
     'quad': quad?.map((p) => <double>[p.$1, p.$2]).toList(growable: false),
     'quadSource': quadSource.wireName,
+    'candidates': candidates
+        .map((candidate) => candidate.toMap())
+        .toList(growable: false),
     'needsReview': needsReview,
     'reviewReason': reviewReason,
     'detectionScore': detectionScore,
@@ -282,7 +312,7 @@ class ScanDocument {
     );
   }
 
-  static const int schemaVersion = 1;
+  static const int schemaVersion = 2;
 
   final String id;
   final String title;

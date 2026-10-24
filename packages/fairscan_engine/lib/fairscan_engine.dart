@@ -36,9 +36,13 @@ class ScanOptions {
     this.maxPixels = 2000000,
     this.jpegQuality = 80,
     this.quad,
+    this.shadowFlatten = true,
   });
 
   final ScanColorMode colorMode;
+
+  /// Apply the native, conservative low-frequency shadow pass.
+  final bool shadowFlatten;
 
   /// Pixel budget of the processed page (FairScan's BALANCED quality is 2 MP).
   final int maxPixels;
@@ -53,6 +57,7 @@ class ScanOptions {
     'colorMode': colorMode.wireName,
     'maxPixels': maxPixels,
     'jpegQuality': jpegQuality,
+    'shadowFlatten': shadowFlatten,
     if (quad != null)
       // Nested [x, y] pairs — the plugin's parseQuad rejects a flat list.
       'quad': quad!.map((p) => <num>[p.$1, p.$2]).toList(growable: false),
@@ -198,6 +203,69 @@ class EngineInfo {
   final bool initialized;
 }
 
+/// One crop candidate produced by the native detector.
+///
+/// The controller compares [coverage] (paper content kept) and
+/// [background] (non-paper share inside the crop) before choosing a quad.
+@immutable
+class QuadCandidate {
+  const QuadCandidate({
+    required this.source,
+    required this.quad,
+    required this.score,
+    required this.meanProb,
+    required this.coverage,
+    required this.frameFill,
+  });
+
+  factory QuadCandidate.fromMap(Map<dynamic, dynamic> map) {
+    final rawQuad = map['quad'];
+    return QuadCandidate(
+      source: map['source'] as String? ?? 'default',
+      quad: rawQuad is List
+          ? rawQuad
+                .whereType<List<dynamic>>()
+                .map(
+                  (point) => (
+                    (point[0] as num).toDouble(),
+                    (point[1] as num).toDouble(),
+                  ),
+                )
+                .toList(growable: false)
+          : const <NormalizedPoint>[],
+      score: (map['score'] as num?)?.toDouble() ?? 0.0,
+      meanProb: (map['meanProb'] as num?)?.toDouble() ?? 0.0,
+      coverage: (map['coverage'] as num?)?.toDouble() ?? 0.0,
+      frameFill: (map['frameFill'] as num?)?.toDouble() ?? 0.0,
+    );
+  }
+
+  /// `import`, `capture`, `paper_outer` or `default`.
+  final String source;
+  final List<NormalizedPoint> quad;
+  final double score;
+  final double meanProb;
+
+  /// Share of the visible paper mask kept by this quad.
+  final double coverage;
+  final double frameFill;
+
+  double get background => (1.0 - meanProb).clamp(0.0, 1.0);
+
+  bool get usable => quad.length == 4 && coverage >= 0.97 && frameFill >= 0.50;
+
+  Map<String, Object?> toMap() => <String, Object?>{
+    'source': source,
+    'quad': quad
+        .map((point) => <double>[point.$1, point.$2])
+        .toList(growable: false),
+    'score': score,
+    'meanProb': meanProb,
+    'coverage': coverage,
+    'frameFill': frameFill,
+  };
+}
+
 /// Result of the detection-only call, which skips warp/enhance.
 @immutable
 class DetectResult {
@@ -212,10 +280,12 @@ class DetectResult {
     required this.sourceHeight,
     required this.segmentationMs,
     required this.detectionMs,
+    this.candidates = const <QuadCandidate>[],
   });
 
   factory DetectResult.fromMap(Map<dynamic, dynamic> map) {
     final rawQuad = map['quad'];
+    final rawCandidates = map['candidates'];
     return DetectResult(
       quad: rawQuad is List
           ? rawQuad
@@ -237,6 +307,12 @@ class DetectResult {
       sourceHeight: (map['sourceHeight'] as num?)?.toInt() ?? 0,
       segmentationMs: (map['segmentationMs'] as num?)?.toInt() ?? 0,
       detectionMs: (map['detectionMs'] as num?)?.toInt() ?? 0,
+      candidates: rawCandidates is List
+          ? rawCandidates
+                .whereType<Map<dynamic, dynamic>>()
+                .map(QuadCandidate.fromMap)
+                .toList(growable: false)
+          : const <QuadCandidate>[],
     );
   }
 
@@ -266,6 +342,10 @@ class DetectResult {
   final int sourceHeight;
   final int segmentationMs;
   final int detectionMs;
+
+  /// Native crop candidates. Older engines/tests may leave this empty; the
+  /// controller then synthesizes the legacy detected + full-frame candidates.
+  final List<QuadCandidate> candidates;
 
   bool get detected => quad != null;
 
@@ -379,7 +459,11 @@ abstract interface class ScanEngine {
 
   Future<DetectResult> detectDocument(String sourcePath);
 
-  Future<CropResult> cropImage(String sourcePath, List<NormalizedPoint> quad, {ScanOptions options});
+  Future<CropResult> cropImage(
+    String sourcePath,
+    List<NormalizedPoint> quad, {
+    ScanOptions options,
+  });
 }
 
 /// MethodChannel client for the Android `fairscan_engine` plugin.
@@ -405,21 +489,19 @@ class FairScanEngine implements ScanEngine {
     String sourcePath, {
     ScanOptions options = const ScanOptions(),
   }) async {
-    final map = await _invoke<Map<dynamic, dynamic>>('scanImage', <
-      String,
-      Object?
-    >{
-      'sourcePath': sourcePath,
-      ...options.toMap(),
-    });
+    final map = await _invoke<Map<dynamic, dynamic>>(
+      'scanImage',
+      <String, Object?>{'sourcePath': sourcePath, ...options.toMap()},
+    );
     return ScanResult.fromMap(map);
   }
 
   @override
   Future<DetectResult> detectDocument(String sourcePath) async {
-    final map = await _invoke<Map<dynamic, dynamic>>('detectDocument', <String, Object?>{
-      'sourcePath': sourcePath,
-    });
+    final map = await _invoke<Map<dynamic, dynamic>>(
+      'detectDocument',
+      <String, Object?>{'sourcePath': sourcePath},
+    );
     return DetectResult.fromMap(map);
   }
 
@@ -429,7 +511,10 @@ class FairScanEngine implements ScanEngine {
     List<NormalizedPoint> quad, {
     ScanOptions options = const ScanOptions(),
   }) async {
-    final map = await _invoke<Map<dynamic, dynamic>>('cropImage', <String, Object?>{
+    final map = await _invoke<Map<dynamic, dynamic>>('cropImage', <
+      String,
+      Object?
+    >{
       'sourcePath': sourcePath,
       // `..remove('quad')` drops the flattened quad from options.toMap(); this
       // explicit key is the canonical serialization the plugin expects.
@@ -443,10 +528,7 @@ class FairScanEngine implements ScanEngine {
     try {
       final result = await _channel.invokeMethod<T>(method, args);
       if (result == null) {
-        throw ScanEngineException(
-          'ENGINE_EMPTY_RESULT',
-          '原生引擎返回了空结果: $method',
-        );
+        throw ScanEngineException('ENGINE_EMPTY_RESULT', '原生引擎返回了空结果: $method');
       }
       return result;
     } on PlatformException catch (error) {

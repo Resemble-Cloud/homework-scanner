@@ -62,6 +62,7 @@ void main() {
       'colorMode': 'BLACK_AND_WHITE',
       'maxPixels': 1000000,
       'jpegQuality': 90,
+      'shadowFlatten': true,
     });
     expect(result.outputPath, '/data/scans/scan_9.jpg');
     expect(result.outputWidth, 1414);
@@ -117,6 +118,105 @@ void main() {
     final cropArgs = (captured!.arguments as Map)['quad'] as List;
     expect(cropArgs, hasLength(4));
     expect(cropArgs.last, [0.2, 0.7]);
+  });
+
+  test('detectDocument 解析纸面外框候选及内容/背景指标', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'detectDocument');
+      return <String, Object?>{
+        'quad': [
+          [0.2, 0.1],
+          [0.8, 0.1],
+          [0.8, 0.9],
+          [0.2, 0.9],
+        ],
+        'score': 0.78,
+        'meanProb': 0.94,
+        'coverage': 0.62,
+        'frameFill': 0.48,
+        'detectionStage': 'capture',
+        'sourceWidth': 3000,
+        'sourceHeight': 4000,
+        'segmentationMs': 200,
+        'detectionMs': 20,
+        'candidates': [
+          {
+            'source': 'capture',
+            'quad': [
+              [0.2, 0.1],
+              [0.8, 0.1],
+              [0.8, 0.9],
+              [0.2, 0.9],
+            ],
+            'score': 0.78,
+            'meanProb': 0.94,
+            'coverage': 0.62,
+            'frameFill': 0.48,
+          },
+          {
+            'source': 'paper_outer',
+            'quad': [
+              [0.02, 0.02],
+              [0.98, 0.02],
+              [0.98, 0.98],
+              [0.02, 0.98],
+            ],
+            'score': 0.7,
+            'meanProb': 0.75,
+            'coverage': 0.99,
+            'frameFill': 0.92,
+          },
+          {
+            'source': 'default',
+            'quad': [
+              [0.02, 0.02],
+              [0.98, 0.02],
+              [0.98, 0.98],
+              [0.02, 0.98],
+            ],
+            'score': 0.5,
+            'meanProb': 0.75,
+            'coverage': 1.0,
+            'frameFill': 0.92,
+          },
+        ],
+      };
+    });
+
+    final detection = await engine.detectDocument('/tmp/page.jpg');
+    expect(detection.candidates, hasLength(3));
+    expect(detection.candidates[1].source, 'paper_outer');
+    expect(detection.candidates[1].coverage, closeTo(0.99, 1e-9));
+    expect(detection.candidates[1].background, closeTo(0.25, 1e-9));
+    expect(detection.candidates[1].usable, isTrue);
+  });
+
+  test('shadowFlatten 开关随 scan 参数发送', () async {
+    MethodCall? captured;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      captured = call;
+      return <String, Object?>{
+        'outputPath': '/data/scans/scan_1.jpg',
+        'outputFormat': 'jpg',
+        'sourceWidth': 10,
+        'sourceHeight': 10,
+        'outputWidth': 10,
+        'outputHeight': 10,
+        'fileBytes': 1,
+        'detected': true,
+        'detectionStage': 'manual',
+        'autoColorMode': 'GRAYSCALE',
+        'colorMode': 'GRAYSCALE',
+        'quad': <List<num>>[],
+        'timings': const <String, int>{},
+      };
+    });
+
+    await engine.scan(
+      '/tmp/a.jpg',
+      options: const ScanOptions(shadowFlatten: false),
+    );
+    expect((captured!.arguments as Map)['shadowFlatten'], isFalse);
   });
 
   test('PlatformException 被转换成带错误码的 ScanEngineException', () async {

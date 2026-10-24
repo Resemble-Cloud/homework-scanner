@@ -95,6 +95,7 @@ class FairscanEnginePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 jpegQuality = common.jpegQuality,
                 colorMode = common.colorMode,
                 manualQuad = manualQuad,
+                shadowFlatten = common.shadowFlatten,
             )
             engine().process(request).toMap()
         }
@@ -124,6 +125,7 @@ class FairscanEnginePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 maxPixels = common.maxPixels,
                 jpegQuality = common.jpegQuality,
                 colorMode = common.colorMode,
+                shadowFlatten = common.shadowFlatten,
             )
             engine().cropImage(request).toMap()
         }
@@ -135,6 +137,7 @@ class FairscanEnginePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         val maxPixels: Long,
         val jpegQuality: Int,
         val colorMode: ColorMode?,
+        val shadowFlatten: Boolean,
     )
 
     private fun commonScanArgs(call: MethodCall, result: MethodChannel.Result): CommonArgs? {
@@ -161,7 +164,13 @@ class FairscanEnginePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 return null
             }
         }
-        return CommonArgs(sourcePath, maxPixels, jpegQuality, colorMode)
+        return CommonArgs(
+            sourcePath,
+            maxPixels,
+            jpegQuality,
+            colorMode,
+            call.argument<Boolean>("shadowFlatten") ?: true,
+        )
     }
 
     /** Accepts `[[x,y], [x,y], [x,y], [x,y]]` in normalized [0,1] coords; null when absent. */
@@ -250,6 +259,16 @@ class FairscanEnginePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         "sourceHeight" to sourceHeight,
         "segmentationMs" to segmentationMs,
         "detectionMs" to detectionMs,
+        "candidates" to candidates.map { candidate ->
+            mapOf(
+                "source" to candidate.source,
+                "quad" to candidate.quad.map { listOf(it.x, it.y) },
+                "score" to candidate.score,
+                "meanProb" to candidate.meanProb,
+                "coverage" to candidate.coverage,
+                "frameFill" to candidate.frameFill,
+            )
+        },
     )
 
     private fun CropResult.toMap(): Map<String, Any?> = mapOf(

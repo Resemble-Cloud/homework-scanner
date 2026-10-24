@@ -28,6 +28,7 @@ class _QuadChoice {
     required this.needsReview,
     this.reason,
     this.detection,
+    this.candidates = const <QuadCandidate>[],
   });
 
   final List<NormalizedPoint> quad;
@@ -35,6 +36,7 @@ class _QuadChoice {
   final bool needsReview;
   final String? reason;
   final DetectResult? detection;
+  final List<QuadCandidate> candidates;
 }
 
 /// Owns one document session and a serial native-processing queue.
@@ -248,6 +250,26 @@ class DocumentController extends ChangeNotifier {
     _enqueue(pageId);
   }
 
+  Future<void> setShadowFlatten(String pageId, bool enabled) async {
+    final index = _indexOf(pageId);
+    if (index < 0) return;
+    final page = _document!.pages[index];
+    if (page.shadowFlatten == enabled && page.status != PageStatus.failed) {
+      return;
+    }
+    _replacePageAt(
+      index,
+      page.copyWith(
+        shadowFlatten: enabled,
+        status: PageStatus.queued,
+        clearError: true,
+      ),
+    );
+    _notify();
+    await _persist();
+    _enqueue(pageId);
+  }
+
   Future<void> setManualQuad(String pageId, List<NormalizedPoint> quad) async {
     if (quad.length != 4) {
       throw ArgumentError.value(quad.length, 'quad', '四角必须正好 4 个点');
@@ -285,6 +307,51 @@ class DocumentController extends ChangeNotifier {
         quadSource: QuadSource.fallback,
         needsReview: false,
         clearReviewReason: true,
+        status: PageStatus.queued,
+        clearError: true,
+        clearProcessed: true,
+        clearOutput: true,
+      ),
+    );
+    _notify();
+    await _persist();
+    _enqueue(pageId);
+  }
+
+  /// Switches to one of the native candidates without opening the drag editor.
+  Future<void> applyCandidate(String pageId, QuadCandidate candidate) async {
+    if (candidate.quad.length != 4) {
+      throw ArgumentError.value(
+        candidate.quad.length,
+        'candidate.quad',
+        '四角必须正好 4 个点',
+      );
+    }
+    final index = _indexOf(pageId);
+    if (index < 0) return;
+    final page = _document!.pages[index];
+    final source = _sourceFor(candidate.source);
+    final lowContent = candidate.coverage < 0.97;
+    final review =
+        source == QuadSource.paperOuter ||
+        source == QuadSource.fallback ||
+        lowContent;
+    final reason = lowContent
+        ? '该候选只保留约 ${(candidate.coverage * 100).round()}% 的可检测纸面，可能切边'
+        : source == QuadSource.paperOuter
+        ? '已切换到纸面外框（保留整页/整本），建议检查边缘'
+        : source == QuadSource.fallback
+        ? '已切换到整图内缩 2%，建议检查四角'
+        : null;
+    _replacePageAt(
+      index,
+      page.copyWith(
+        quad: List<NormalizedPoint>.unmodifiable(candidate.quad),
+        quadSource: source,
+        candidates: page.candidates,
+        needsReview: review,
+        reviewReason: reason,
+        clearReviewReason: reason == null,
         status: PageStatus.queued,
         clearError: true,
         clearProcessed: true,
@@ -446,6 +513,7 @@ class DocumentController extends ChangeNotifier {
       double? frameFill = page.detectionFrameFill;
       double? coverage = page.detectionCoverage;
       String? engineStage = page.engineStage;
+      var candidates = page.candidates;
       DetectResult? detection;
 
       // Reprocessing (colour/retry) keeps the already accepted corners. Only a
@@ -462,12 +530,14 @@ class DocumentController extends ChangeNotifier {
         frameFill = choice.detection?.frameFill;
         coverage = choice.detection?.coverage;
         engineStage = choice.detection?.detectionStage;
+        candidates = choice.candidates;
       }
 
       final result = await engine.scan(
         page.originalPath,
         options: ScanOptions(
           colorMode: page.colorMode,
+          shadowFlatten: page.shadowFlatten,
           maxPixels: maxPixels,
           quad: chosenQuad,
         ),
@@ -490,6 +560,7 @@ class DocumentController extends ChangeNotifier {
           status: PageStatus.done,
           quad: chosenQuad,
           quadSource: source,
+          candidates: candidates,
           needsReview: needsReview,
           reviewReason: reason,
           clearReviewReason: reason == null,
@@ -543,28 +614,92 @@ class DocumentController extends ChangeNotifier {
   }
 
   _QuadChoice _chooseQuad(DetectResult detection) {
-    final quad = detection.quad;
-    final fill = detection.frameFill ?? 0;
-    final coverage = detection.coverage ?? 0;
-    final usable =
-        detection.detected &&
-        quad != null &&
-        quad.length == 4 &&
-        detection.score >= kAutoQuadScoreThreshold &&
-        fill >= kAutoQuadMinFrameFill &&
-        coverage >= 0.85;
-    if (usable) {
-      final source = detection.detectionStage == 'capture'
-          ? QuadSource.capture
-          : QuadSource.import;
+    final candidates = _candidatesFromDetection(detection);
+    final preserving = candidates
+        .where(
+          (candidate) =>
+              candidate.quad.length == 4 &&
+              candidate.coverage >= 0.97 &&
+              candidate.frameFill >= kAutoQuadMinFrameFill,
+        )
+        .toList(growable: false);
+
+    // Normal high-confidence detections stay first so Sprint 2 behaviour is
+    // unchanged for easy pages.
+    final auto =
+        preserving
+            .where(
+              (candidate) =>
+                  _sourceFor(candidate.source) == QuadSource.import ||
+                  _sourceFor(candidate.source) == QuadSource.capture,
+            )
+            .where(
+              (candidate) =>
+                  candidate.score >= kAutoQuadScoreThreshold &&
+                  candidate.background <= 0.35,
+            )
+            .toList()
+          ..sort((a, b) => a.background.compareTo(b.background));
+    if (auto.isNotEmpty) {
       return _QuadChoice(
-        quad: quad,
-        source: source,
+        quad: auto.first.quad,
+        source: _sourceFor(auto.first.source),
         needsReview: false,
+        candidates: candidates,
         detection: detection,
       );
     }
-    final reason = !detection.detected || quad == null
+
+    // An open notebook often produces a single-page detector quad. The native
+    // whole-paper candidate keeps both pages; it is preferred whenever it
+    // preserves more paper and is not mostly desk.
+    final outer =
+        preserving
+            .where(
+              (candidate) =>
+                  _sourceFor(candidate.source) == QuadSource.paperOuter,
+            )
+            .where((candidate) => candidate.background <= 0.65)
+            .toList()
+          ..sort((a, b) => a.background.compareTo(b.background));
+    if (outer.isNotEmpty) {
+      return _QuadChoice(
+        quad: outer.first.quad,
+        source: QuadSource.paperOuter,
+        needsReview: true,
+        reason: '检测框没有覆盖完整纸面，已改用纸面外框以保留整页/整本，建议检查边缘',
+        candidates: candidates,
+        detection: detection,
+      );
+    }
+
+    // A low score can be caused by a low frame fill while the detector still
+    // keeps all paper. Prefer that over the desk-filled whole frame, but keep
+    // the warning visible.
+    final lowConfidence =
+        preserving
+            .where((candidate) {
+              final source = _sourceFor(candidate.source);
+              return source == QuadSource.import ||
+                  source == QuadSource.capture;
+            })
+            .where((candidate) => candidate.background <= 0.55)
+            .toList()
+          ..sort((a, b) => a.background.compareTo(b.background));
+    if (lowConfidence.isNotEmpty) {
+      return _QuadChoice(
+        quad: lowConfidence.first.quad,
+        source: _sourceFor(lowConfidence.first.source),
+        needsReview: true,
+        reason: '检测置信度偏低（${detection.score.toStringAsFixed(2)}），已保留检测纸面，建议检查边缘',
+        candidates: candidates,
+        detection: detection,
+      );
+    }
+
+    final fill = detection.frameFill ?? 0;
+    final coverage = detection.coverage ?? 0;
+    final reason = !detection.detected || detection.quad == null
         ? '未自动检出完整纸张，已用整图内缩 2% 处理，建议检查四角'
         : fill < kAutoQuadMinFrameFill
         ? '检测框只占画面 ${(fill * 100).round()}%，可能只框住纸面一部分，已用整图内缩 2% 兜底'
@@ -576,9 +711,46 @@ class DocumentController extends ChangeNotifier {
       source: QuadSource.fallback,
       needsReview: true,
       reason: reason,
+      candidates: candidates,
       detection: detection,
     );
   }
+
+  List<QuadCandidate> _candidatesFromDetection(DetectResult detection) {
+    if (detection.candidates.isNotEmpty) return detection.candidates;
+    final candidates = <QuadCandidate>[];
+    final quad = detection.quad;
+    if (quad != null && quad.length == 4) {
+      candidates.add(
+        QuadCandidate(
+          source: detection.detectionStage == 'capture' ? 'capture' : 'import',
+          quad: quad,
+          score: detection.score,
+          meanProb: detection.meanProb ?? 0,
+          coverage: detection.coverage ?? 0,
+          frameFill: detection.frameFill ?? 0,
+        ),
+      );
+    }
+    candidates.add(
+      const QuadCandidate(
+        source: 'default',
+        quad: kDefaultInsetQuad,
+        score: 0,
+        meanProb: 0,
+        coverage: 1,
+        frameFill: 0.9216,
+      ),
+    );
+    return candidates;
+  }
+
+  QuadSource _sourceFor(String source) => switch (source) {
+    'import' => QuadSource.import,
+    'capture' => QuadSource.capture,
+    'paper_outer' => QuadSource.paperOuter,
+    _ => QuadSource.fallback,
+  };
 
   void _replacePageAt(int index, ScanPage page, {bool touchExport = true}) {
     final document = _document;

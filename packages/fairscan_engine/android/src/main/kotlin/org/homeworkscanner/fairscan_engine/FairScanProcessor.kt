@@ -70,6 +70,21 @@ data class ScanRequest(
      * so a mis-detected page frame can never silently drop formulas again.
      */
     val manualQuad: List<Point>? = null,
+    /** Apply the conservative low-frequency shadow pass after enhancement. */
+    val shadowFlatten: Boolean = true,
+)
+
+/** One possible crop, scored against the segmentation mask. */
+data class QuadCandidateResult(
+    /** `import`, `capture`, `paper_outer` or `default`. */
+    val source: String,
+    val quad: List<Point>,
+    val score: Double,
+    val meanProb: Double,
+    /** Share of the visible paper mask kept by this quad (contentKeep). */
+    val coverage: Double,
+    /** Share of the photo covered by this quad. */
+    val frameFill: Double,
 )
 
 /** Result of running only the paper-detection stage (no warp/enhance). */
@@ -88,6 +103,8 @@ data class DetectResult(
     val sourceHeight: Int,
     val segmentationMs: Long,
     val detectionMs: Long,
+    /** Detector + whole-paper + full-frame candidates, best-effort. */
+    val candidates: List<QuadCandidateResult> = emptyList(),
 )
 
 /** Result of cropping to a (manual or auto) quad, kept for the UI. */
@@ -117,6 +134,7 @@ data class CropRequest(
     val jpegQuality: Int = 80,
     val colorMode: ColorMode? = null,
     val maxDecodePixels: Int = 12_000_000,
+    val shadowFlatten: Boolean = true,
 )
 
 data class StageTimings(
@@ -162,6 +180,9 @@ class FairScanProcessor(
 
         /** See [FrameScore.MIN_FRAME_FILL] for the calibration behind this value. */
         const val MIN_FRAME_FILL = FrameScore.MIN_FRAME_FILL
+
+        private const val DEFAULT_INSET = 0.02
+        private const val CANDIDATE_DEDUP_DISTANCE = 0.015
     }
 
     private val segmenter = FairScanSegmenter(context, modelAssetName)
@@ -288,6 +309,13 @@ class FairScanProcessor(
                 // full frame downscaled to the export budget (FairScan does the same).
                 resizeForMaxPixels(bgr, budget.toDouble())
             }
+            if (request.shadowFlatten) {
+                val flattened = ShadowCorrection.applyIfNeeded(page)
+                if (flattened !== page) {
+                    page.release()
+                    page = flattened
+                }
+            }
             // Trim the interpolated edge before encoding: this is the cheap fix
             // for the black 1-2 px line that perspective warping can leave on
             // the top/left border. It is a crop, not a re-encode.
@@ -389,6 +417,12 @@ class FairScanProcessor(
 
             val detectStart = SystemClock.elapsedRealtime()
             val (quad, stage) = detectQuad(segmentation, ImageSize(bgr.cols(), bgr.rows()))
+            val candidates = buildCandidates(
+                segmentation,
+                ImageSize(bgr.cols(), bgr.rows()),
+                quad,
+                stage,
+            )
             val score = quad?.let { scoreQuad(segmentation, it) }
             val detectionMs = SystemClock.elapsedRealtime() - detectStart
 
@@ -398,6 +432,9 @@ class FairScanProcessor(
                     "(paper=${"%.3f".format(score?.meanProb ?: 0.0)} " +
                     "coverage=${"%.3f".format(score?.coverage ?: 0.0)} " +
                     "fill=${"%.3f".format(score?.frameFill ?: 0.0)}) " +
+                    "candidates=${candidates.joinToString { c ->
+                        "${c.source}:keep=${"%.2f".format(c.coverage)}/bg=${"%.2f".format(1.0 - c.meanProb)}"
+                    }} " +
                     "in ${detectionMs}ms (seg ${segmentationMs}ms)",
             )
 
@@ -414,6 +451,7 @@ class FairScanProcessor(
                 sourceHeight = sourceHeight,
                 segmentationMs = segmentationMs,
                 detectionMs = detectionMs,
+                candidates = candidates,
             )
         } catch (failure: ScanFailure) {
             throw failure
@@ -442,6 +480,7 @@ class FairScanProcessor(
                 colorMode = request.colorMode,
                 maxDecodePixels = request.maxDecodePixels,
                 manualQuad = request.quad,
+                shadowFlatten = request.shadowFlatten,
             ),
         )
         return CropResult(
@@ -482,6 +521,62 @@ class FairScanProcessor(
             )
             .scaledTo(size.width.toDouble(), size.height.toDouble(), 1.0, 1.0)
         return normalized to (if (importQuad != null) "import" else "capture")
+    }
+
+    /**
+     * Builds the crop candidates passed to Flutter. The controller chooses one
+     * using content coverage first, then the least background. The default
+     * 2%-inset frame is always present as a safe last resort.
+     */
+    private fun buildCandidates(
+        segmentation: FairScanSegmenter.Segmentation,
+        sourceSize: ImageSize,
+        detected: Quad?,
+        stage: String,
+    ): List<QuadCandidateResult> {
+        val candidates = mutableListOf<QuadCandidateResult>()
+
+        fun add(source: String, quad: Quad) {
+            val points = listOf(quad.topLeft, quad.topRight, quad.bottomRight, quad.bottomLeft)
+            if (candidates.any { quadsClose(it.quad, points) }) return
+            val score = scoreQuad(segmentation, quad)
+            candidates.add(
+                QuadCandidateResult(
+                    source = source,
+                    quad = listOf(quad.topLeft, quad.topRight, quad.bottomRight, quad.bottomLeft),
+                    score = score.score,
+                    meanProb = score.meanProb,
+                    coverage = score.coverage,
+                    frameFill = score.frameFill,
+                ),
+            )
+        }
+
+        if (detected != null) add(stage, detected)
+        val outer = runCatching {
+            PaperOuterQuad.detect(segmentation, sourceSize)
+        }.onFailure {
+            Log.w(TAG, "paper outer candidate failed", it)
+        }.getOrNull()
+        if (outer != null) add("paper_outer", outer)
+        add(
+            "default",
+            Quad(
+                Point(DEFAULT_INSET, DEFAULT_INSET),
+                Point(1.0 - DEFAULT_INSET, DEFAULT_INSET),
+                Point(1.0 - DEFAULT_INSET, 1.0 - DEFAULT_INSET),
+                Point(DEFAULT_INSET, 1.0 - DEFAULT_INSET),
+            ),
+        )
+        return candidates
+    }
+
+    private fun quadsClose(a: List<Point>, b: List<Point>): Boolean {
+        if (a.size != 4 || b.size != 4) return false
+        return (0 until 4).all { index ->
+            kotlin.math.abs(a[index].x - b[index].x) <= CANDIDATE_DEDUP_DISTANCE &&
+                kotlin.math.abs(a[index].y - b[index].y) <= CANDIDATE_DEDUP_DISTANCE
+        }
     }
 
     /** Confidence of a detected frame, broken into its two failure modes. */

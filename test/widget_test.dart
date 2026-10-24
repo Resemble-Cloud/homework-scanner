@@ -136,6 +136,10 @@ void main() {
     // The grid tile remains in the route stack underneath the detail page.
     expect(find.text('建议检查'), findsWidgets);
     expect(find.byKey(const Key('review-correct-button')), findsOneWidget);
+    expect(find.text('裁切候选'), findsOneWidget);
+    expect(find.text('检测框'), findsOneWidget);
+    expect(find.text('整图 2%'), findsWidgets);
+    expect(find.byKey(const Key('shadow-flatten-switch')), findsOneWidget);
   });
 
   testWidgets('失败页显示失败标记，详情提供重试入口', (tester) async {

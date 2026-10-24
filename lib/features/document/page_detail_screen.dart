@@ -61,6 +61,15 @@ class PageDetailScreen extends StatelessWidget {
               _PagePreview(page: page),
               const SizedBox(height: 12),
               _StatusRow(page: page),
+              if (page.candidates.length > 1) ...[
+                const SizedBox(height: 12),
+                _CandidateSelector(
+                  page: page,
+                  enabled: !_busy(page),
+                  onSelected: (candidate) =>
+                      _applyCandidate(context, page, candidate),
+                ),
+              ],
               if (page.needsReview) ...[
                 const SizedBox(height: 12),
                 _ReviewCard(
@@ -93,7 +102,17 @@ class PageDetailScreen extends StatelessWidget {
                     ),
                 ],
               ),
-              const SizedBox(height: 20),
+              SwitchListTile(
+                key: const Key('shadow-flatten-switch'),
+                contentPadding: EdgeInsets.zero,
+                value: page.shadowFlatten,
+                onChanged: _busy(page)
+                    ? null
+                    : (value) => _setShadowFlatten(context, page, value),
+                title: const Text('去阴影'),
+                subtitle: const Text('轻度压平大面积光照不均；关闭可恢复 Sprint 2 输出'),
+              ),
+              const SizedBox(height: 12),
               Text('页面操作', style: Theme.of(context).textTheme.titleSmall),
               const SizedBox(height: 8),
               Wrap(
@@ -147,6 +166,21 @@ class PageDetailScreen extends StatelessWidget {
     }
   }
 
+  Future<void> _setShadowFlatten(
+    BuildContext context,
+    ScanPage page,
+    bool enabled,
+  ) async {
+    try {
+      await controller.setShadowFlatten(page.id, enabled);
+      if (context.mounted) {
+        _snack(context, enabled ? '已开启去阴影，正在重新处理' : '已关闭去阴影，正在重新处理');
+      }
+    } catch (error) {
+      if (context.mounted) _snack(context, '切换去阴影失败：$error');
+    }
+  }
+
   Future<void> _editQuad(
     BuildContext context,
     ScanPage page,
@@ -175,6 +209,21 @@ class PageDetailScreen extends StatelessWidget {
       if (context.mounted) _snack(context, '已改用整图内缩 2% 重新处理');
     } catch (error) {
       if (context.mounted) _snack(context, '操作失败：$error');
+    }
+  }
+
+  Future<void> _applyCandidate(
+    BuildContext context,
+    ScanPage page,
+    QuadCandidate candidate,
+  ) async {
+    try {
+      await controller.applyCandidate(page.id, candidate);
+      if (context.mounted) {
+        _snack(context, '已切换为${_candidateLabel(candidate)}，正在重新处理');
+      }
+    } catch (error) {
+      if (context.mounted) _snack(context, '切换候选框失败：$error');
     }
   }
 
@@ -333,6 +382,83 @@ class _StatusRow extends StatelessWidget {
   }
 }
 
+class _CandidateSelector extends StatelessWidget {
+  const _CandidateSelector({
+    required this.page,
+    required this.enabled,
+    required this.onSelected,
+  });
+
+  final ScanPage page;
+  final bool enabled;
+  final ValueChanged<QuadCandidate> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text('裁切候选', style: theme.textTheme.titleSmall),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text('优先保留纸面，再减少桌面', style: theme.textTheme.bodySmall),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                for (final candidate in page.candidates)
+                  Tooltip(
+                    message:
+                        '保留纸面 ${(candidate.coverage * 100).round()}%'
+                        ' · 背景 ${(candidate.background * 100).round()}%'
+                        ' · 占画面 ${(candidate.frameFill * 100).round()}%',
+                    child: ChoiceChip(
+                      label: Text(_candidateLabel(candidate)),
+                      selected: _candidateSelected(candidate),
+                      onSelected: enabled && !_candidateSelected(candidate)
+                          ? (_) => onSelected(candidate)
+                          : null,
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  bool _candidateSelected(QuadCandidate candidate) {
+    final source = switch (candidate.source) {
+      'import' => QuadSource.import,
+      'capture' => QuadSource.capture,
+      'paper_outer' => QuadSource.paperOuter,
+      _ => QuadSource.fallback,
+    };
+    if (source == QuadSource.import || source == QuadSource.capture) {
+      return page.quadSource == QuadSource.import ||
+          page.quadSource == QuadSource.capture;
+    }
+    return page.quadSource == source;
+  }
+}
+
+String _candidateLabel(QuadCandidate candidate) => switch (candidate.source) {
+  'import' || 'capture' => '检测框',
+  'paper_outer' => '纸面外框',
+  _ => '整图 2%',
+};
+
 class _ReviewCard extends StatelessWidget {
   const _ReviewCard({
     required this.page,
@@ -477,6 +603,7 @@ class _PageFacts extends StatelessWidget {
       ('原图', page.originalPath),
       ('处理结果', page.processedPath ?? '—'),
       ('最终四角来源', page.quadSource.label),
+      ('去阴影', page.shadowFlatten ? '开启' : '关闭'),
       if (page.engineStage != null) ('引擎检测入口', page.engineStage!),
       if (page.detectionScore != null)
         ('检测置信度', page.detectionScore!.toStringAsFixed(3)),
