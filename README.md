@@ -16,6 +16,12 @@
   <img src="https://img.shields.io/badge/Status-MVP-brightgreen" alt="MVP">
 </p>
 
+<p align="center">
+  <a href="https://github.com/Resemble-Cloud/homework-scanner/raw/release-apk/homework-scanner-v1.0.0-arm64.apk">
+    <img src="https://img.shields.io/badge/⬇_下载-APK_v1.0.0-2E6F5E?style=for-the-badge" alt="下载 APK">
+  </a>
+</p>
+
 ---
 
 ## 这是什么
@@ -32,6 +38,20 @@
 所有图片和 PDF 都在本机处理，**不需要账号，不上传云端，不做 OCR**。
 
 > 本项目是 MVP：主流程已经可用，算法和真机适配仍在持续打磨。
+
+---
+
+## 下载
+
+当前版本 **v1.0.0**，arm64 安装包约 53 MB：
+
+- [下载 homework-scanner-v1.0.0-arm64.apk](https://github.com/Resemble-Cloud/homework-scanner/raw/release-apk/homework-scanner-v1.0.0-arm64.apk)
+- SHA-256：`cb63d10f4c01482bf882bc71bf2b0f0563d514ab8744e42c363d58b57287927e`
+
+要求 Android 8.0（API 26）及以上，安装时允许“安装未知来源应用”。
+
+> APK 暂放在 `release-apk` 分支；GitHub Actions/Releases 因账号 billing
+> 限制暂不可用，后续恢复后会迁移到正式 Release。
 
 ---
 
