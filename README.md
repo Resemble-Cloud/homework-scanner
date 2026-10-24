@@ -40,6 +40,7 @@ lib/
   features/document/                 # 页面网格、页面详情、导出对话框
   widgets/                            # 四角编辑器、状态缩略图
 packages/fairscan_engine/             # Android 原生 FairScan 桥接与算法
+tools/generate_launcher_icon.py      # 启动图标/自适应前景生成
 test/                                 # 模型/控制器/PDF/Widget 测试
 docs/Sprint6-验收报告.md              # 默认色彩/默认裁切设置
 docs/Sprint5-验收报告.md              # 多文档与多选导入
