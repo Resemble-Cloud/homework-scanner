@@ -1,122 +1,262 @@
-# homework_scanner · Sprint 6
+<p align="center">
+  <img src="docs/app_icon_preview.png" width="132" alt="作业扫描 App 图标">
+</p>
 
-Flutter 作业扫描 App：**连续拍照 → 后台逐页 FairScan 处理 → 多页修正/排序 → 一个 PDF**。
+<h1 align="center">作业扫描 · Homework Scanner</h1>
 
-扫描算法继续复用 FairScan 的 `imageprocessing`（OpenCV + LiteRT），通过 Kotlin 插件 + MethodChannel
-调用；没有第二套检测/矫正引擎，也没有用 Dart 重写 CV。
+<p align="center">
+  <b>连续拍照 → 自动裁切/增强 → 多页管理 → 一个 PDF</b><br>
+  一个专注、离线、不折腾的 Android 作业扫描 App。
+</p>
 
-## 当前能力
+<p align="center">
+  <img src="https://img.shields.io/badge/Flutter-3.47-02569B?logo=flutter&logoColor=white" alt="Flutter">
+  <img src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white" alt="Android 8.0+">
+  <img src="https://img.shields.io/badge/License-GPL--3.0-blue" alt="GPL-3.0">
+  <img src="https://img.shields.io/badge/Status-MVP-brightgreen" alt="MVP">
+</p>
 
-- **多文档**：启动进入“我的扫描”文档库，可新建/继续第二份文档，不再一份结束就卡住
-- **相册多选**：一次选择多张图片，按选择顺序批量加入当前文档
-- **扫描设置**：可设默认色彩（默认灰度）和默认裁切（自动/检测框/纸面外框/整图 2%），只影响新页面
-- 全屏 CameraX 相机（Flutter `camera` 插件），最高可用分辨率、闪光灯、A4 参考框
-- 连拍即入队；后台串行处理，缩略图条显示排队/处理中/完成/失败，不阻塞下一次拍摄
-- 多页文档：原图始终保留，单页重新裁剪（Sprint 1 四角编辑器）、切色彩模式重处理、重拍、删除
-- 页面网格长按拖动排序
-- 会话 JSON + 文件目录落盘；App 强杀/重装后恢复未导出文档
-- 检测不再只有“检测框 / 整图”两选一：原生返回检测框、纸面外框、整图 2% 三个候选；优先保留纸面，再减少桌面
-- 页面详情可在候选之间一键切换；低内容候选保留“建议检查”警告
-- 处理结果使用版本化文件名并清理旧文件，重新裁剪后立即刷新，不再被 Flutter 路径缓存卡住
-- 保守去阴影：低强度压平大范围光照梯度，可在单页关闭回退
-- Dart `pdf` 包逐页组装；处理后的 JPEG 以原始 DCT 流嵌入，不二次编码；A4/原始比例可选
-- 系统分享/保存 sheet 输出 PDF，默认文件名 `扫描_日期时间.pdf`，可改名
+---
 
-## 目录
+## 这是什么
 
-```
-lib/
-  main.dart                          # 依赖装配、启动恢复
-  models/scan_document.dart          # 文档/页面模型、JSON、四角来源
-  models/scan_settings.dart          # 默认色彩/裁切设置
-  services/
-    session_store.dart               # 会话目录 + JSON
-    settings_store.dart              # scan_settings.json 读写
-    document_controller.dart         # 串行队列、兜底、重拍/排序/恢复/导出
-    pdf_export_service.dart          # 串行 PDF 组装
-    share_service.dart               # 系统分享
-  features/camera/                   # 全屏相机 + 快门 + 缩略图条
-  features/documents/                # 文档库、新建/打开多份文档
-  features/document/                 # 页面网格、页面详情、导出对话框
-  widgets/                            # 四角编辑器、状态缩略图
-packages/fairscan_engine/             # Android 原生 FairScan 桥接与算法
-tools/generate_launcher_icon.py      # 启动图标/自适应前景生成
-test/                                 # 模型/控制器/PDF/Widget 测试
-docs/Sprint6-验收报告.md              # 默认色彩/默认裁切设置
-docs/Sprint5-验收报告.md              # 多文档与多选导入
-docs/Sprint4-修复记录.md              # 裁切结果缓存修复
-docs/Sprint4-计划书.md                # Sprint 4 计划
-```
+**作业扫描**是一个 Android 端的文档扫描 App，面向学生作业/笔记：
 
-## 环境（本机实测）
+- 连续拍摄多页，后台逐页处理，不阻塞下一次快门；
+- 自动检测纸面四角、透视校正、灰度/彩色/黑白增强；
+- 支持重新裁剪、重拍、删除、拖动排序；
+- 多份文档独立保存，随时继续上一份或新建下一份；
+- 相册支持一次多选导入；
+- 最后导出一个多页 PDF，可直接系统分享/保存。
 
-| 组件 | 版本 |
+所有图片和 PDF 都在本机处理，**不需要账号，不上传云端，不做 OCR**。
+
+> 本项目是 MVP：主流程已经可用，算法和真机适配仍在持续打磨。
+
+---
+
+## 功能
+
+### 拍摄与导入
+
+- 全屏 CameraX 相机，支持闪光灯、A4 参考框；
+- 快门后立刻入队，处理在后台串行执行；
+- 相册支持单张/多选导入，按选择顺序加入当前文档。
+
+### 自动裁切
+
+原生检测会返回三个候选：
+
+| 候选 | 作用 |
 | --- | --- |
-| Flutter / Dart | 3.47.5 stable / 3.13.4 |
-| Android Gradle Plugin | 9.1.0 |
-| Kotlin | 2.4.0 |
-| JDK | 17 |
-| Android SDK | platform 36 / build-tools 36.0.0 |
-| OpenCV / LiteRT | 4.12.0 / 1.4.1 |
-| minSdk / targetSdk | 26 / 36 |
+| 检测框 | 最紧，优先去掉桌面 |
+| 纸面外框 | 保留整页/整本，通常带少量桌面 |
+| 整图 2% | 保底，只裁掉照片边缘 |
 
-## 构建与测试
+控制器会结合纸面覆盖率、取景占比和背景比例选择候选；不确定时显示“建议检查”，不静默切页。
+
+页面详情里可以：
+
+- 一键切换三个候选并重新处理；
+- 进入四角编辑器手动拖动四个角；
+- 切换自动/彩色/灰度/黑白；
+- 开关保守去阴影。
+
+### 多文档
+
+启动进入“我的扫描”文档库：
+
+- 每份文档独立目录、独立 `session.json`；
+- 点击卡片继续编辑；
+- “扫描新文档”创建下一份；
+- 返回文档库自动刷新；
+- App 被强杀/重装后，未完成页面可恢复。
+
+### 设置
+
+“我的扫描”右上角齿轮：
+
+- 默认色彩：自动 / 彩色 / 灰度 / 黑白（默认灰度）
+- 默认裁切：自动 / 检测框 / 纸面外框 / 整图 2%（默认自动）
+- 设置只影响新页面，不回溯修改已有页面。
+
+### PDF
+
+- Dart `pdf` 逐页组装；
+- 处理后的 JPEG 以原始 DCT 流嵌入，避免二次编码；
+- 支持 A4 适配或原始比例；
+- 默认文件名 `扫描_日期时间.pdf`，可改名；
+- 通过系统分享/保存面板输出。
+
+---
+
+## 处理流程
+
+```mermaid
+flowchart LR
+    A[CameraX / 相册] --> B[DocumentController]
+    B --> C[复制原图到文档目录]
+    C --> D[串行处理队列]
+    D --> E[FairScanEngine MethodChannel]
+    E --> F[Kotlin FairScanProcessor]
+    F --> G[OpenCV + LiteRT]
+    G --> H[裁切 / 增强 / 编码]
+    H --> I[版本化 processed 文件]
+    B --> J[SessionStore JSON]
+    I --> K[PdfExportService]
+    J --> K
+    K --> L[系统分享 / 保存]
+```
+
+几个关键约束：
+
+- **严格串行**：一次只把一个页面送进原生引擎，避免 12MP 原图并发导致内存峰值；
+- 原图永远保留，处理结果写新文件，失败不覆盖原图；
+- 处理结果文件名带时间戳，避免 Flutter `ImageCache` 按路径缓存旧图；
+- 原生编码前裁掉 2px 插值边缘，避免透视校正后的黑边。
+
+---
+
+## 技术栈
+
+| 层 | 技术 |
+| --- | --- |
+| UI | Flutter 3.47 / Dart 3.13 / Material 3 |
+| 相机 | `camera`（CameraX） |
+| 相册 | `image_picker`（多选） |
+| 原生引擎 | Kotlin + FairScan `imageprocessing` |
+| CV / ML | OpenCV 4.12 + LiteRT 1.4.1 |
+| PDF | Dart `pdf` + 原始 JPEG DCT 嵌入 |
+| 存储 | 本地文件 + JSON（无数据库、无网络） |
+
+Android：minSdk 26，targetSdk 36。
+
+---
+
+## 项目结构
+
+```text
+lib/
+  main.dart                       # 依赖装配、设置加载
+  models/
+    scan_document.dart            # 文档/页面模型、JSON、四角
+    scan_settings.dart            # 默认色彩/裁切
+  services/
+    document_controller.dart      # 串行队列、候选选择、恢复、导出
+    session_store.dart            # 文档目录 + session.json
+    settings_store.dart           # scan_settings.json
+    pdf_export_service.dart       # 逐页 PDF
+    share_service.dart            # 系统分享
+  features/
+    camera/                       # 全屏相机
+    documents/                    # 文档库
+    document/                     # 页面网格、详情、导出
+    settings/                     # 扫描设置
+  widgets/                        # 四角编辑器、缩略图
+packages/fairscan_engine/         # Kotlin 原生 FairScan 桥接
+test/                             # 模型/控制器/PDF/Widget 测试
+tools/generate_launcher_icon.py   # 图标生成
+```
+
+---
+
+## 构建
+
+### 环境
+
+- Flutter **3.47+** / Dart **3.13+**
+- JDK **17**
+- Android SDK **platform 36** / build-tools 36
+- Android 8.0（API 26）及以上设备
+
+### 命令
 
 ```bash
+git clone https://github.com/Resemble-Cloud/homework-scanner.git
+cd homework-scanner
+
 flutter pub get
 flutter analyze
 flutter test
 
-# Android 原生单元测试
+# 原生 Kotlin 单元测试
 ./android/gradlew -p android :fairscan_engine:testDebugUnitTest
 
-# 模拟器（x86_64）
+# 模拟器 / x86_64
 flutter build apk --release --target-platform android-x64
 
-# 交付包：只保留 arm64-v8a
+# 交付包：仅 arm64-v8a
 flutter build apk --release --target-platform android-arm64 --split-per-abi
-# build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
 ```
 
-需要 Flutter stable、Android SDK platform 36、JDK 17；Windows 上 Flutter 的 cache lockfile
-偶尔需要设置 `FLUTTER_ALREADY_LOCKED=true`，这不是项目配置。
+产物：
 
-## 关键实现约束
+```text
+build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+```
 
-- 每页处理严格串行：`DocumentController` 一次只把一个页面送进原生引擎，避免 12 MP 原图并发。
-- 页面始终先复制到文档目录再入队；原生输出写另一个文件，失败不会覆盖原图。
-- 检测候选：检测框（import/capture）、纸面外框（paper_outer）、整图内缩 2%（default）；候选必须
-  `coverage >= 0.97` 且 `frameFill >= 0.50` 才可能被自动采用，其余回退并标记“建议检查”。
-- 纸面外框在现有 FairScan 分割 mask 上计算，不引入第二套引擎。
-- 去阴影是 FairScan 增强后的低强度后处理（强度 0.22，背景范围 <14 时跳过），黑白模式不启用。
-- 原生编码前裁掉 2 px 插值边缘（`EdgeInset.kt`），消除透视矫正后的左上角黑边。
-- PDF 导出逐页读文件、逐页加页；JPEG 流直接 `/DCTDecode` 嵌入，避免多页解码位图同时驻留。
-- 相机、分享等平台插件只在设备上运行；widget/单元测试使用注入的 fake 引擎与同步测试存储。
+> 当前只支持 Android。iOS 工程未接入 FairScan 原生引擎。
+
+---
+
+## 测试
+
+| 范围 | 数量 |
+| --- | ---: |
+| App（模型/控制器/PDF/Widget） | 41 |
+| Flutter 插件 | 6 |
+| 原生 Kotlin | 29 |
+| `flutter analyze` | 0 issues |
+
+测试使用**合成夹具** `test_assets/fixtures/page.jpg`，不包含真实作业照片。
+
+---
+
+## 隐私
+
+- 图片、PDF、会话 JSON 全部保存在 App 私有目录；
+- 不上传、不登录、不接入云端 OCR；
+- 公开仓库不包含真实作业照片、设备截图或 PDF；
+- 开发者本地如需运行 `tools/quality_report.py`，请自行准备真实样张目录。
+
+---
 
 ## 已知限制
 
-- 多文档 MVP 不做文档删除/重命名/文件夹管理；切换文档会等待当前队列处理完成。
-- 默认裁切选“检测框”更紧，但摊开笔记本可能切半页；低内容时会保留“建议检查”，不会静默接受。
-- 设置只影响之后新增页面，不回溯修改已有页面；没有“重置设置”入口。
-- 最近仍只在 Android 模拟器（x86_64 / API 36）验证；**没有实体手机**，真机相机、长按手势、
-  手机 PDF 阅读器仍未验收。
-- 纸面外框是矩形近似，会包进少量桌面/键盘角落；摊开笔记本的真机样本仍需验证。
-- 去阴影效果保守（背景标准差小幅改善，暗像素约 -3.3%），强阴影样本未完成真机评估。
-- 当前策略仍偏保守，部分页面会显示“建议检查”；阈值基于少量真实样本标定，需要更多真机样本重新校准。
-- 实时边缘检测未做（后续项）。
+- 自动裁切在“摊开笔记本 + 桌面背景”下仍可能带入桌面或切到半页；需要在页面详情里手动修正。
+- 纸面外框是旋转矩形近似，不是任意轮廓贴合。
+- 去阴影是保守的全局低频压平，强阴影场景提升有限。
+- 默认裁切选“检测框”会更紧，摊开笔记本有切半页风险；低内容时会提示“建议检查”。
+- 开发验收以 Android 模拟器为主，不同厂商的相机/相册选择器仍建议真机回归。
+- 暂不支持 OCR、全文搜索、云同步。
 
-详见 [Sprint 6 验收报告](docs/Sprint6-验收报告.md)。
+---
 
-## 样例与隐私
+## Roadmap（想法，不承诺）
 
-公开仓库**不包含**真实作业照片、设备截图、PDF 联系表或与之对应的历史证据目录。测试使用的是
-`test_assets/fixtures/page.jpg` 合成夹具；`tools/quality_report.py` 需要你本地准备
-`test_assets/real_samples/` 才能运行。
+- 更稳的摊开笔记本双页/轮廓检测；
+- 更强的局部阴影校正；
+- 真机相机、相册选择器与 PDF 阅读器回归；
+- 可选 OCR / 搜索（如果确实需要）。
 
-真实样张、开发期截图和完整历史保存在本地私有备份中，不随公开仓库分发。
+---
 
-## 许可证
+## License
 
-`packages/fairscan_engine/android/src/main/java/org/fairscan/**` 复制自
-[FairScan](https://github.com/pynicolas/FairScan)（GPLv3），文件保留原始版权头。
-应用整体应以 GPLv3 兼容方式分发，详见 [LICENSE](LICENSE) 与插件 README。
+本项目整体以 **GNU GPL v3** 发布，详见 [LICENSE](LICENSE)。
+
+`packages/fairscan_engine/android/src/main/java/org/fairscan/**` 来自
+[FairScan](https://github.com/pynicolas/FairScan)，保留原始版权头，同样受 GPLv3 约束。
+如果你分发本 App 的二进制，请同时提供对应源码。
+
+## 致谢
+
+- [FairScan](https://github.com/pynicolas/FairScan)：文档检测、透视校正与增强引擎
+- [OpenCV](https://opencv.org/) / [LiteRT](https://ai.google.dev/edge/litert)
+- Flutter、CameraX、`pdf`、`image_picker`、`share_plus`
+
+---
+
+<p align="center">
+  如果这个项目对你有帮助，欢迎 star；问题和建议请走 GitHub Issues。
+</p>
