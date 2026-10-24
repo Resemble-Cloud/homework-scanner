@@ -45,12 +45,7 @@ test/                                 # 模型/控制器/PDF/Widget 测试
 docs/Sprint6-验收报告.md              # 默认色彩/默认裁切设置
 docs/Sprint5-验收报告.md              # 多文档与多选导入
 docs/Sprint4-修复记录.md              # 裁切结果缓存修复
-docs/Sprint3-验收报告.md              # 候选/去阴影
-docs/sprint3/                         # 候选对比、样张输出、metrics
-evidence/sprint3/                     # 模拟器截图
-evidence/sprint4/                     # 裁切结果截图
-evidence/sprint5/                     # 文档库/多选导入截图
-evidence/sprint6/                     # 设置页/灰度结果截图
+docs/Sprint4-计划书.md                # Sprint 4 计划
 ```
 
 ## 环境（本机实测）
@@ -60,7 +55,7 @@ evidence/sprint6/                     # 设置页/灰度结果截图
 | Flutter / Dart | 3.47.5 stable / 3.13.4 |
 | Android Gradle Plugin | 9.1.0 |
 | Kotlin | 2.4.0 |
-| JDK | 17（`D:\dev\jdk17`） |
+| JDK | 17 |
 | Android SDK | platform 36 / build-tools 36.0.0 |
 | OpenCV / LiteRT | 4.12.0 / 1.4.1 |
 | minSdk / targetSdk | 26 / 36 |
@@ -68,15 +63,11 @@ evidence/sprint6/                     # 设置页/灰度结果截图
 ## 构建与测试
 
 ```bash
-export PATH="/d/dev/flutter/bin:$PATH"
-export FLUTTER_ALREADY_LOCKED=true      # 本机 Flutter cache lockfile 被占用时的绕过
-export JAVA_HOME=/d/dev/jdk17
-export ANDROID_HOME=/d/dev/Android/Sdk
-export GRADLE_USER_HOME=D:/dev/gradle-home
-
 flutter pub get
 flutter analyze
 flutter test
+
+# Android 原生单元测试
 ./android/gradlew -p android :fairscan_engine:testDebugUnitTest
 
 # 模拟器（x86_64）
@@ -86,6 +77,9 @@ flutter build apk --release --target-platform android-x64
 flutter build apk --release --target-platform android-arm64 --split-per-abi
 # build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
 ```
+
+需要 Flutter stable、Android SDK platform 36、JDK 17；Windows 上 Flutter 的 cache lockfile
+偶尔需要设置 `FLUTTER_ALREADY_LOCKED=true`，这不是项目配置。
 
 ## 关键实现约束
 
@@ -108,10 +102,18 @@ flutter build apk --release --target-platform android-arm64 --split-per-abi
   手机 PDF 阅读器仍未验收。
 - 纸面外框是矩形近似，会包进少量桌面/键盘角落；摊开笔记本的真机样本仍需验证。
 - 去阴影效果保守（背景标准差小幅改善，暗像素约 -3.3%），强阴影样本未完成真机评估。
-- 当前策略仍偏保守，部分页面会显示“建议检查”；阈值为 Sprint 1 的 3 张样本标定，需要真机重新校准。
+- 当前策略仍偏保守，部分页面会显示“建议检查”；阈值基于少量真实样本标定，需要更多真机样本重新校准。
 - 实时边缘检测未做（后续项）。
 
 详见 [Sprint 6 验收报告](docs/Sprint6-验收报告.md)。
+
+## 样例与隐私
+
+公开仓库**不包含**真实作业照片、设备截图、PDF 联系表或与之对应的历史证据目录。测试使用的是
+`test_assets/fixtures/page.jpg` 合成夹具；`tools/quality_report.py` 需要你本地准备
+`test_assets/real_samples/` 才能运行。
+
+真实样张、开发期截图和完整历史保存在本地私有备份中，不随公开仓库分发。
 
 ## 许可证
 

@@ -74,11 +74,7 @@
 4. 新页面 `colorMode=GRAYSCALE`，`quadSource=import`（检测框候选），输出 `1448×2750`；
 5. 设置页显示检测框选中。
 
-![默认设置](../evidence/sprint6/settings_default.png)
-
-![切换检测框](../evidence/sprint6/settings_detector.png)
-
-![灰度结果](../evidence/sprint6/gray_page.png)
+开发期截图包含真实作业内容，未随公开仓库发布；设置页与灰度输出已由本地验收确认。
 
 页面 JSON 关键字段：
 

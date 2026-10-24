@@ -50,9 +50,7 @@
 | 插件测试 | **6 passed** |
 | arm64 APK | 54,410,444 B / 51.9 MiB，仅 arm64-v8a |
 
-手动四角后的界面：
-
-![手动裁切结果](../evidence/sprint4/manual_result.png)
+手动四角后的界面截图因含真实作业内容，未随公开仓库发布。
 
 ---
 

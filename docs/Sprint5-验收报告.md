@@ -41,16 +41,7 @@
 3. 一次相册多选 2 张图片，提示“已导入 2 页，后台处理中”；
 4. 两页处理完成后返回文档库，显示两份独立文档。
 
-截图：
-
-- 文档库（1 份）：[library_one.png](../evidence/sprint5/library_one.png)
-- 相册多选： [multi_select.png](../evidence/sprint5/multi_select.png)
-- 新文档 2 页： [new_document.png](../evidence/sprint5/new_document.png)
-- 文档库（2 份）：[library_two.png](../evidence/sprint5/library_two.png)
-
-![文档库](../evidence/sprint5/library_two.png)
-
-![多选导入](../evidence/sprint5/multi_select.png)
+开发期截图包含真实作业内容，未随公开仓库发布；本地私有备份保留完整证据。
 
 ### 行为确认
 
@@ -100,7 +91,6 @@
 
 - `lib/features/documents/document_library_page.dart`
 - `docs/Sprint5-验收报告.md`
-- `evidence/sprint5/*`
 
 修改：
 
