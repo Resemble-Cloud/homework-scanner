@@ -288,6 +288,10 @@ class FairScanProcessor(
                 // full frame downscaled to the export budget (FairScan does the same).
                 resizeForMaxPixels(bgr, budget.toDouble())
             }
+            // Trim the interpolated edge before encoding: this is the cheap fix
+            // for the black 1-2 px line that perspective warping can leave on
+            // the top/left border. It is a crop, not a re-encode.
+            page = trimOuterEdge(page)
             val extractMs = SystemClock.elapsedRealtime() - extractStart
 
             val encodeStart = SystemClock.elapsedRealtime()
@@ -576,6 +580,17 @@ class FairScanProcessor(
 
     private fun maxPixelsFor(mode: ColorMode, base: Long): Long =
         if (mode == ColorMode.BLACK_AND_WHITE) base * 4 else base
+
+    /** Crops [EdgeInset.DEFAULT_PX] from each edge, returning a new Mat. */
+    private fun trimOuterEdge(input: Mat): Mat {
+        val rect = EdgeInset.rect(input.cols(), input.rows())
+        if (rect[0] == 0 && rect[1] == 0 && rect[2] == input.cols() && rect[3] == input.rows()) {
+            return input
+        }
+        val cropped = input.submat(rect[1], rect[1] + rect[3], rect[0], rect[0] + rect[2]).clone()
+        input.release()
+        return cropped
+    }
 
     private fun decodeBitmap(file: File, maxPixels: Int): Bitmap {
         try {

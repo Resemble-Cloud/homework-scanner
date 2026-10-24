@@ -1,311 +1,187 @@
+import 'dart:io';
+
 import 'package:fairscan_engine/fairscan_engine.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:homework_scanner/main.dart';
+import 'package:homework_scanner/models/scan_document.dart';
+import 'package:homework_scanner/services/document_controller.dart';
+import 'package:homework_scanner/services/session_store.dart';
 
-const _timings = ScanStageTimings(
-  decodeMs: 120,
-  segmentationMs: 260,
-  detectionMs: 18,
-  colorModeMs: 12,
-  extractMs: 410,
-  encodeMs: 60,
-  totalMs: 900,
-);
-
-ScanResult _result({
-  String outputPath = '/data/user/0/app/files/scans/scan_1.jpg',
-}) => ScanResult(
-  outputPath: outputPath,
-  outputFormat: 'jpg',
-  sourceWidth: 4000,
-  sourceHeight: 3000,
-  outputWidth: 1400,
-  outputHeight: 1050,
-  fileBytes: 320 * 1024,
-  detected: true,
-  detectionStage: 'import',
-  autoColorMode: ScanColorMode.grayscale,
-  colorMode: ScanColorMode.grayscale,
-  quad: const [(10.0, 20.0), (3900.0, 30.0), (3890.0, 2980.0), (20.0, 2970.0)],
-  timings: _timings,
-);
-
-class _FakeEngine implements ScanEngine {
-  _FakeEngine({this.error});
-
-  final ScanEngineException? error;
-  int scanCount = 0;
-  int detectCount = 0;
-  ScanOptions? lastOptions;
-
-  /// Returned by [detectDocument]; defaults to a high-confidence frame so the
-  /// happy-path tests do not open the corner editor.
-  DetectResult detectResult = const DetectResult(
-    quad: [(0.1, 0.1), (0.9, 0.1), (0.9, 0.9), (0.1, 0.9)],
-    score: 0.97,
-    meanProb: 0.98,
-    coverage: 0.99,
-    frameFill: 0.8,
-    detectionStage: 'import',
-    sourceWidth: 3000,
-    sourceHeight: 4000,
-    segmentationMs: 260,
-    detectionMs: 18,
-  );
-
-  @override
-  Future<EngineInfo> engineInfo() async => const EngineInfo(
-    modelAsset: 'fairscan-segmentation-model.tflite',
-    opencvVersion: '4.12.0',
-    initialized: true,
-  );
-
-  @override
-  Future<void> initialize() async {}
-
-  @override
-  Future<DetectResult> detectDocument(String sourcePath) async {
-    detectCount++;
-    final failure = error;
-    if (failure != null) throw failure;
-    return detectResult;
-  }
-
-  @override
-  Future<ScanResult> scan(
-    String sourcePath, {
-    ScanOptions options = const ScanOptions(),
-  }) async {
-    scanCount++;
-    lastOptions = options;
-    final failure = error;
-    if (failure != null) throw failure;
-    return _result();
-  }
-
-  @override
-  Future<CropResult> cropImage(
-    String sourcePath,
-    List<NormalizedPoint> quad, {
-    ScanOptions options = const ScanOptions(),
-  }) async {
-    final failure = error;
-    if (failure != null) throw failure;
-    return CropResult(
-      outputPath: '/data/user/0/app/files/crops/crop_1.jpg',
-      outputFormat: 'jpg',
-      outputWidth: 1400,
-      outputHeight: 1050,
-      fileBytes: 300 * 1024,
-      colorMode: ScanColorMode.grayscale,
-      timings: _timings,
-    );
-  }
-}
-
-Future<void> _pumpApp(
-  WidgetTester tester,
-  _FakeEngine engine, {
-  Future<String?> Function()? picker,
-}) async {
-  // Tall surface so the result cards are laid out even without scrolling.
-  tester.view.devicePixelRatio = 1.0;
-  tester.view.physicalSize = const Size(900, 2600);
-  addTearDown(tester.view.resetPhysicalSize);
-  addTearDown(tester.view.resetDevicePixelRatio);
-  await tester.pumpWidget(
-    HomeworkScannerApp(
-      engine: engine,
-      pickImage: picker ?? () async => '/tmp/homework.jpg',
-    ),
-  );
-  await tester.pumpAndSettle();
-}
+import 'support/fakes.dart';
 
 void main() {
-  testWidgets('扫描成功后展示原图、结果、耗时与输出信息', (tester) async {
-    final engine = _FakeEngine();
-    await _pumpApp(tester, engine);
+  late Directory temp;
+  late SessionStore store;
+  late FakeScanEngine engine;
+  late RecordingPdfExporter exporter;
+  late DocumentController controller;
 
-    expect(find.textContaining('fairscan-segmentation-model.tflite'), findsOneWidget);
-
-    await tester.tap(find.byKey(const Key('pick-button')));
-    await tester.pumpAndSettle();
-
-    expect(engine.scanCount, 1);
-    expect(find.byKey(const Key('source-image')), findsOneWidget);
-    expect(find.byKey(const Key('result-image')), findsOneWidget);
-    expect(find.textContaining('1400×1050'), findsWidgets);
-    expect(find.textContaining('320 KB'), findsOneWidget);
-    expect(find.textContaining('成功（import）'), findsOneWidget);
-    expect(find.textContaining('900 ms'), findsOneWidget);
-    // Confidence is split on screen so a frame that grabbed a strip of the page
-    // is diagnosable from a screenshot.
-    expect(find.textContaining('0.800'), findsOneWidget);
-  });
-
-  testWidgets('原生失败时展示错误码且保留原图路径', (tester) async {
-    final engine = _FakeEngine(
-      error: const ScanEngineException('DECODE_FAILED', '无法解码图片: broken.jpg'),
+  setUp(() async {
+    temp = await Directory.systemTemp.createTemp('scanner_widget_test_');
+    store = SyncSessionStore(root: temp);
+    engine = FakeScanEngine(
+      fixturePath: fixtureJpegPath(),
+      outputDir: Directory('${temp.path}/native'),
     );
-    await _pumpApp(tester, engine);
-
-    await tester.tap(find.byKey(const Key('pick-button')));
-    await tester.pumpAndSettle();
-
-    expect(find.text('处理失败'), findsOneWidget);
-    expect(find.textContaining('DECODE_FAILED: 无法解码图片'), findsOneWidget);
-    expect(find.text('原图未被修改。'), findsOneWidget);
-    expect(find.byKey(const Key('result-image')), findsNothing);
+    exporter = RecordingPdfExporter();
+    controller = DocumentController(
+      engine: engine,
+      store: store,
+      exporter: exporter,
+      defaultColorMode: ScanColorMode.grayscale,
+    );
+    await controller.initialize();
   });
 
-  testWidgets('取消选择时不调用引擎', (tester) async {
-    final engine = _FakeEngine();
-    await _pumpApp(tester, engine, picker: () async => null);
-
-    await tester.tap(find.byKey(const Key('pick-button')));
-    await tester.pumpAndSettle();
-
-    expect(engine.scanCount, 0);
-    expect(find.text('处理失败'), findsNothing);
+  tearDown(() async {
+    controller.dispose();
+    try {
+      if (await temp.exists()) await temp.delete(recursive: true);
+    } catch (_) {
+      // Image cache may still hold a test JPEG on Windows; the temp folder is
+      // disposable and the OS will reclaim it.
+    }
   });
 
-  testWidgets('色彩模式随选项传入引擎', (tester) async {
-    final engine = _FakeEngine();
-    await _pumpApp(tester, engine);
+  void setUpView(WidgetTester tester) {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(900, 1700);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+  }
 
-    await tester.tap(find.byType(DropdownButtonFormField<ScanColorMode>));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('黑白（二值化）').last);
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('pick-button')));
-    await tester.pumpAndSettle();
+  Future<void> pumpApp(WidgetTester tester) async {
+    setUpView(tester);
+    await tester.pumpWidget(HomeworkScannerApp(controller: controller));
+    // The grid has no indeterminate animation once all pages are done. Pump
+    // explicit frames so a regression fails an assertion rather than hanging
+    // in pumpAndSettle's ten-minute window.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+  }
 
-    expect(engine.lastOptions?.colorMode, ScanColorMode.blackAndWhite);
+  Future<void> pumpFrames(WidgetTester tester) async {
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+  }
+
+  /// Controller work uses real file I/O; run it outside the fake-async zone.
+  Future<List<ScanPage>> addPages(WidgetTester tester, int count) async {
+    final pages = await tester.runAsync(() async {
+      final added = <ScanPage>[];
+      for (var i = 0; i < count; i++) {
+        added.add(await controller.addCapturedPage(fixtureJpegPath()));
+      }
+      await controller.waitForIdle();
+      return added;
+    });
+    expect(controller.document!.pages.every((p) => p.isDone), isTrue);
+    return pages!;
+  }
+
+  testWidgets('有页面时显示页面网格、编号与处理状态', (tester) async {
+    final pages = await addPages(tester, 2);
+    await pumpApp(tester);
+
+    expect(find.text('作业扫描'), findsOneWidget);
+    expect(find.byKey(Key('page-tile-${pages[0].id}')), findsOneWidget);
+    expect(find.byKey(Key('page-tile-${pages[1].id}')), findsOneWidget);
+    expect(find.text('全部 2 页处理完成'), findsOneWidget);
+    expect(find.text('已完成'), findsNWidgets(2));
   });
 
-  testWidgets('4MP 档位随选项传入引擎', (tester) async {
-    final engine = _FakeEngine();
-    await _pumpApp(tester, engine);
+  testWidgets('长按拖动页面可以改变顺序', (tester) async {
+    final pages = await addPages(tester, 3);
+    await pumpApp(tester);
 
-    // Default is already 4MP (Sprint 1: keep sub/superscripts legible).
-    await tester.tap(find.byKey(const Key('pick-button')));
-    await tester.pumpAndSettle();
+    final start = tester.getCenter(find.byKey(Key('page-tile-${pages[0].id}')));
+    final target = tester.getCenter(
+      find.byKey(Key('page-tile-${pages[2].id}')),
+    );
+    final gesture = await tester.startGesture(start);
+    await tester.pump(const Duration(milliseconds: 700));
+    await gesture.moveTo(target);
+    await tester.pump(const Duration(milliseconds: 200));
+    await gesture.up();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
 
-    expect(engine.lastOptions?.maxPixels, 4000000);
-
-    await tester.tap(find.text('平衡 2MP'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('pick-button')));
-    await tester.pumpAndSettle();
-
-    expect(engine.lastOptions?.maxPixels, 2000000);
+    expect(controller.document!.pages.map((page) => page.id), [
+      pages[1].id,
+      pages[2].id,
+      pages[0].id,
+    ]);
   });
 
-  testWidgets('检测先行：高置信度直接扫描，不再走四角编辑', (tester) async {
-    final engine = _FakeEngine();
-    await _pumpApp(tester, engine);
+  testWidgets('低置信页面出现建议检查并可进入四角修正', (tester) async {
+    engine.detection = DetectResult(
+      quad: const [(0.3, 0.1), (0.7, 0.1), (0.7, 0.9), (0.3, 0.9)],
+      score: 0.42,
+      meanProb: 0.95,
+      coverage: 0.9,
+      frameFill: 0.22,
+      detectionStage: 'capture',
+      sourceWidth: 900,
+      sourceHeight: 1200,
+      segmentationMs: 40,
+      detectionMs: 5,
+    );
+    final pages = await addPages(tester, 1);
+    await pumpApp(tester);
 
-    await tester.tap(find.byKey(const Key('pick-button')));
-    await tester.pumpAndSettle();
-
-    expect(engine.detectCount, 1);
-    expect(engine.scanCount, 1);
-    expect(find.byKey(const Key('apply-quad-button')), findsNothing);
-    expect(engine.lastOptions?.quad, isNotNull);
+    expect(find.text('建议检查'), findsOneWidget);
+    await tester.tap(find.byKey(Key('page-tile-${pages.single.id}')));
+    await pumpFrames(tester);
+    // The grid tile remains in the route stack underneath the detail page.
+    expect(find.text('建议检查'), findsWidgets);
+    expect(find.byKey(const Key('review-correct-button')), findsOneWidget);
   });
 
-  testWidgets('检测置信度偏低时打开四角编辑器', (tester) async {
-    final engine = _FakeEngine()
-      ..detectResult = const DetectResult(
-        quad: [(0.1, 0.1), (0.9, 0.1), (0.9, 0.9), (0.1, 0.9)],
-        score: 0.42,
-        detectionStage: 'capture',
-        sourceWidth: 3000,
-        sourceHeight: 4000,
-        segmentationMs: 260,
-        detectionMs: 30,
-      );
-    await _pumpApp(tester, engine);
+  testWidgets('失败页显示失败标记，详情提供重试入口', (tester) async {
+    engine.failScansRemaining = 1;
+    final pages = await tester.runAsync(() async {
+      final page = await controller.addCapturedPage(fixtureJpegPath());
+      await controller.waitForIdle();
+      return page;
+    });
+    await pumpApp(tester);
 
-    await tester.tap(find.byKey(const Key('pick-button')));
-    await tester.pumpAndSettle();
-
-    // Auto scan is held back until the user confirms the frame.
-    expect(engine.scanCount, 0);
-    expect(find.byKey(const Key('apply-quad-button')), findsOneWidget);
-
-    await tester.tap(find.byKey(const Key('apply-quad-button')));
-    await tester.pumpAndSettle();
-
-    expect(engine.scanCount, 1);
+    expect(find.text('处理失败 · 点按重试'), findsOneWidget);
+    await tester.tap(find.byKey(Key('page-tile-${pages!.id}')));
+    await pumpFrames(tester);
+    expect(find.byKey(const Key('retry-page-button')), findsOneWidget);
+    expect(find.text('处理失败，原图未修改'), findsOneWidget);
   });
 
-  testWidgets('检测框只占取景框一小部分时强制确认四角', (tester) async {
-    // Sample 2.jpg: the frame was 100% paper but only covered a strip of the
-    // photo, so the interior score alone looked fine.
-    final engine = _FakeEngine()
-      ..detectResult = const DetectResult(
-        quad: [(0.3, 0.1), (0.7, 0.1), (0.7, 0.9), (0.3, 0.9)],
-        // The engine's 0.95 paper fill is dragged down by the 22% frame fill.
-        score: 0.78,
-        meanProb: 0.95,
-        coverage: 0.9,
-        frameFill: 0.22,
-        detectionStage: 'capture',
-        sourceWidth: 3000,
-        sourceHeight: 4000,
-        segmentationMs: 260,
-        detectionMs: 40,
-      );
-    await _pumpApp(tester, engine);
+  testWidgets('导出对话框带默认文件名并可关闭适配 A4', (tester) async {
+    await addPages(tester, 2);
+    setUpView(tester);
+    await tester.pumpWidget(HomeworkScannerApp(controller: controller));
+    await pumpFrames(tester);
 
-    await tester.tap(find.byKey(const Key('pick-button')));
-    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('export-button')));
+    await pumpFrames(tester);
+    expect(find.text('导出 PDF'), findsOneWidget);
 
-    expect(engine.scanCount, 0);
-    expect(find.byKey(const Key('apply-quad-button')), findsOneWidget);
-    expect(find.textContaining('取景框 22%'), findsOneWidget);
-  });
+    final field = tester.widget<TextField>(
+      find.byKey(const Key('pdf-name-field')),
+    );
+    expect(field.controller!.text, startsWith('扫描_'));
+    expect(find.text('2 页 · 处理后的图片直接嵌入，不二次压缩'), findsOneWidget);
 
-  testWidgets('未检出纸张时同样进入四角编辑器', (tester) async {
-    final engine = _FakeEngine()
-      ..detectResult = const DetectResult(
-        quad: null,
-        score: 0.0,
-        detectionStage: 'none',
-        sourceWidth: 3000,
-        sourceHeight: 4000,
-        segmentationMs: 260,
-        detectionMs: 22,
-      );
-    await _pumpApp(tester, engine);
+    await tester.enterText(find.byKey(const Key('pdf-name-field')), '作业_验收');
+    await tester.tap(find.byKey(const Key('fit-a4-checkbox')));
+    await tester.pump();
+    final checkbox = tester.widget<CheckboxListTile>(
+      find.byKey(const Key('fit-a4-checkbox')),
+    );
+    expect(checkbox.value, isFalse);
 
-    await tester.tap(find.byKey(const Key('pick-button')));
-    await tester.pumpAndSettle();
-
-    expect(engine.scanCount, 0);
-    expect(find.byKey(const Key('apply-quad-button')), findsOneWidget);
-  });
-
-  testWidgets('手动调整四角按钮打开编辑器并把 quad 传给引擎', (tester) async {
-    final engine = _FakeEngine();
-    await _pumpApp(tester, engine);
-
-    await tester.tap(find.byKey(const Key('pick-button')));
-    await tester.pumpAndSettle();
-    final autoQuad = engine.lastOptions?.quad;
-    expect(autoQuad, isNotNull);
-
-    await tester.tap(find.text('手动调整四角'));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('apply-quad-button')), findsOneWidget);
-
-    await tester.tap(find.byKey(const Key('apply-quad-button')));
-    await tester.pumpAndSettle();
-
-    expect(engine.scanCount, 2);
-    expect(engine.lastOptions?.quad, isNotNull);
+    await tester.tap(find.text('取消'));
+    await pumpFrames(tester);
+    expect(find.text('导出 PDF'), findsNothing);
+    // Actual export invocation/ordering is covered by the controller test.
+    expect(exporter.calls, 0);
   });
 }

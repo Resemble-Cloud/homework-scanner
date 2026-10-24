@@ -1,5 +1,5 @@
 name: homework_scanner
-description: "A new Flutter project."
+description: "连续拍照、多页管理与 PDF 导出的作业扫描 App，复用 FairScan 原生引擎。"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -37,6 +37,11 @@ dependencies:
   fairscan_engine:
     path: packages/fairscan_engine
   image_picker: ^1.2.4
+  camera: ^0.12.1
+  pdf: ^3.13.1
+  share_plus: ^13.3.1
+  path_provider: ^2.1.6
+  path: ^1.9.1
 
 dev_dependencies:
   flutter_test:
