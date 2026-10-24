@@ -1,0 +1,94 @@
+name: Release APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.5'
+          channel: stable
+          cache: true
+
+      - name: Flutter dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+      # GitHub runners have less RAM than the development machine. The project
+      # uses 8G for the Gradle daemon locally; cap it for CI to avoid OOM.
+      - name: Cap Gradle heap for CI
+        run: |
+          sed -i 's/-Xmx8G/-Xmx4G/' android/gradle.properties
+          sed -i 's/-XX:MaxMetaspaceSize=4G/-XX:MaxMetaspaceSize=1G/' android/gradle.properties
+
+      - name: Build arm64 release APK
+        run: flutter build apk --release --target-platform android-arm64 --split-per-abi
+
+      - name: Rename artifact
+        run: |
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
+            "dist/homework-scanner-${GITHUB_REF_NAME}-arm64.apk"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: 作业扫描 ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            Android 作业扫描 App · arm64-v8a。
+
+            - Android 8.0（API 26）及以上
+            - 连续拍摄、多文档、相册多选、自动裁切/手动四角、灰度/彩色/黑白、PDF 导出
+            - 所有图片与 PDF 仅在本机处理，不上传云端
+
+            安装：下载 APK 后允许“安装未知来源应用”即可。若相机/相册界面与预期不同，请反馈机型和系统版本。
+          files: dist/homework-scanner-*-arm64.apk
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: homework-scanner-arm64
+          path: dist/homework-scanner-*-arm64.apk
+          if-no-files-found: error
