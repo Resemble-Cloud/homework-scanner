@@ -53,3 +53,7 @@ packages/*/.dart_tool/
 packages/*/android/.kotlin/
 packages/*/android/local.properties
 android/.kotlin/
+
+# Raw engine dumps pulled from the device (regenerate with tools/quality_report.py)
+docs/quality/raw/
+/android/build/

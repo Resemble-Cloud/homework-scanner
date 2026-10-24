@@ -75,6 +75,50 @@ void main() {
     expect(result.fileSizeLabel, '512 KB');
   });
 
+  test('quad 以 4 组 [x, y] 对发送，而非扁平 8 个数字', () async {
+    // Regression: the plugin's parseQuad rejects a flat [x1,y1,...,y4] list
+    // with "四角坐标必须是 4 个点，实际 8 个". Sending flat broke both the
+    // manual-crop editor and the detect-then-scan path on device.
+    MethodCall? captured;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      captured = call;
+      return <String, Object?>{
+        'outputPath': '/data/scans/scan_1.jpg',
+        'outputFormat': 'jpg',
+        'sourceWidth': 4000,
+        'sourceHeight': 3000,
+        'outputWidth': 1414,
+        'outputHeight': 1000,
+        'fileBytes': 524288,
+        'detected': true,
+        'detectionStage': 'manual',
+        'autoColorMode': 'GRAYSCALE',
+        'colorMode': 'GRAYSCALE',
+        'quad': <List<num>>[],
+        'timings': const <String, int>{'totalMs': 700},
+      };
+    });
+
+    const quad = <NormalizedPoint>[
+      (0.1, 0.2),
+      (0.9, 0.3),
+      (0.8, 0.9),
+      (0.2, 0.7),
+    ];
+
+    await engine.scan('/tmp/a.jpg', options: const ScanOptions(quad: quad));
+    final scanArgs = (captured!.arguments as Map)['quad'] as List;
+    expect(scanArgs, hasLength(4));
+    expect(scanArgs.first, [0.1, 0.2]);
+    expect(scanArgs, isNot(contains(0.1))); // not a flat number list
+
+    captured = null;
+    await engine.cropImage('/tmp/a.jpg', quad);
+    final cropArgs = (captured!.arguments as Map)['quad'] as List;
+    expect(cropArgs, hasLength(4));
+    expect(cropArgs.last, [0.2, 0.7]);
+  });
+
   test('PlatformException 被转换成带错误码的 ScanEngineException', () async {
     messenger.setMockMethodCallHandler(channel, (call) async {
       throw PlatformException(code: 'DECODE_FAILED', message: '无法解码图片');

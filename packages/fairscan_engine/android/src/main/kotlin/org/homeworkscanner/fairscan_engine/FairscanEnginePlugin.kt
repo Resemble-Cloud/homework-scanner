@@ -23,6 +23,7 @@ import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import org.fairscan.imageprocessing.ColorMode
+import org.fairscan.imageprocessing.Point
 import java.io.File
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -33,6 +34,8 @@ import java.util.concurrent.Executors
  * Channel: `fairscan_engine`
  *  - `engineInfo`      -> Map with model/OpenCV info
  *  - `scanImage`       -> Map with output path, dimensions, timings
+ *  - `detectDocument`  -> Map with normalized quad, score, timing (no warp)
+ *  - `cropImage`       -> Map with output path, dimensions, timings (manual quad)
  *  - `initialize`      -> loads OpenCV + LiteRT ahead of the first scan
  */
 class FairscanEnginePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
@@ -73,20 +76,77 @@ class FairscanEnginePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             "engineInfo" -> runAsync(result) { engine().engineInfo() }
             "initialize" -> runAsync(result) { engine().initialize(); true }
             "scanImage" -> scanImage(call, result)
+            "detectDocument" -> detectDocument(call, result)
+            "cropImage" -> cropImage(call, result)
             else -> result.notImplemented()
         }
     }
 
     private fun scanImage(call: MethodCall, result: MethodChannel.Result) {
+        val common = commonScanArgs(call, result) ?: return
+        val manualQuad = parseQuad(call.argument<List<Any?>>("quad"), result) ?: return
+
+        runAsync(result) {
+            val ctx = context ?: throw ScanFailure("ENGINE_DETACHED", "引擎已卸载")
+            val request = ScanRequest(
+                sourcePath = common.sourcePath,
+                outputDir = File(ctx.filesDir, "scans"),
+                maxPixels = common.maxPixels,
+                jpegQuality = common.jpegQuality,
+                colorMode = common.colorMode,
+                manualQuad = manualQuad,
+            )
+            engine().process(request).toMap()
+        }
+    }
+
+    private fun detectDocument(call: MethodCall, result: MethodChannel.Result) {
         val sourcePath = call.argument<String>("sourcePath")
         if (sourcePath.isNullOrBlank()) {
             result.error("INVALID_ARGS", "缺少 sourcePath 参数", null)
             return
         }
+        runAsync(result) {
+            engine().detectDocument(DetectRequest(sourcePath = sourcePath)).toMap()
+        }
+    }
+
+    private fun cropImage(call: MethodCall, result: MethodChannel.Result) {
+        val common = commonScanArgs(call, result) ?: return
+        val quad = parseQuad(call.argument<List<Any?>>("quad"), result) ?: return
+
+        runAsync(result) {
+            val ctx = context ?: throw ScanFailure("ENGINE_DETACHED", "引擎已卸载")
+            val request = CropRequest(
+                sourcePath = common.sourcePath,
+                outputDir = File(ctx.filesDir, "crops"),
+                quad = quad,
+                maxPixels = common.maxPixels,
+                jpegQuality = common.jpegQuality,
+                colorMode = common.colorMode,
+            )
+            engine().cropImage(request).toMap()
+        }
+    }
+
+    /** Shared validation for scanImage / cropImage. Returns null if invalid (error already sent). */
+    private data class CommonArgs(
+        val sourcePath: String,
+        val maxPixels: Long,
+        val jpegQuality: Int,
+        val colorMode: ColorMode?,
+    )
+
+    private fun commonScanArgs(call: MethodCall, result: MethodChannel.Result): CommonArgs? {
+        val sourcePath = call.argument<String>("sourcePath")
+        if (sourcePath.isNullOrBlank()) {
+            result.error("INVALID_ARGS", "缺少 sourcePath 参数", null)
+            return null
+        }
         val maxPixels = (call.argument<Number>("maxPixels") ?: DEFAULT_MAX_PIXELS).toLong()
         if (maxPixels <= 0) {
             result.error("INVALID_ARGS", "maxPixels 必须大于 0", null)
-            return
+            return null
         }
         val jpegQuality = (call.argument<Number>("jpegQuality") ?: DEFAULT_JPEG_QUALITY)
             .toInt().coerceIn(1, 100)
@@ -98,21 +158,35 @@ class FairscanEnginePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             "BLACK_AND_WHITE" -> ColorMode.BLACK_AND_WHITE
             else -> {
                 result.error("INVALID_ARGS", "未知色彩模式: $colorModeArg", null)
-                return
+                return null
             }
         }
+        return CommonArgs(sourcePath, maxPixels, jpegQuality, colorMode)
+    }
 
-        runAsync(result) {
-            val ctx = context ?: throw ScanFailure("ENGINE_DETACHED", "引擎已卸载")
-            val request = ScanRequest(
-                sourcePath = sourcePath,
-                outputDir = File(ctx.filesDir, "scans"),
-                maxPixels = maxPixels,
-                jpegQuality = jpegQuality,
-                colorMode = colorMode,
-            )
-            engine().process(request).toMap()
+    /** Accepts `[[x,y], [x,y], [x,y], [x,y]]` in normalized [0,1] coords; null when absent. */
+    private fun parseQuad(raw: List<Any?>?, result: MethodChannel.Result): List<Point>? {
+        if (raw == null) return null
+        if (raw.size != 4) {
+            result.error("INVALID_QUAD", "四角坐标必须是 4 个点，实际 ${raw.size} 个", null)
+            return null
         }
+        val points = mutableListOf<Point>()
+        for (item in raw) {
+            val pair = item as? List<*>
+            val x = (pair?.getOrNull(0) as? Number)?.toDouble()
+            val y = (pair?.getOrNull(1) as? Number)?.toDouble()
+            if (x == null || y == null) {
+                result.error("INVALID_QUAD", "每个角点必须是 [x, y] 数字对", null)
+                return null
+            }
+            if (x < 0 || x > 1 || y < 0 || y > 1) {
+                result.error("INVALID_QUAD", "角点坐标必须在 [0, 1] 区间: ($x, $y)", null)
+                return null
+            }
+            points.add(Point(x, y))
+        }
+        return points
     }
 
     private fun engine(): FairScanProcessor {
@@ -154,6 +228,37 @@ class FairscanEnginePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         "autoColorMode" to autoColorMode.name,
         "colorMode" to colorMode.name,
         "quad" to quad?.map { listOf(it.x, it.y) },
+        "timings" to mapOf(
+            "decodeMs" to timings.decodeMs,
+            "segmentationMs" to timings.segmentationMs,
+            "detectionMs" to timings.detectionMs,
+            "colorModeMs" to timings.colorModeMs,
+            "extractMs" to timings.extractMs,
+            "encodeMs" to timings.encodeMs,
+            "totalMs" to timings.totalMs,
+        ),
+    )
+
+    private fun DetectResult.toMap(): Map<String, Any?> = mapOf(
+        "quad" to quad?.map { listOf(it.x, it.y) },
+        "score" to score,
+        "meanProb" to meanProb,
+        "coverage" to coverage,
+        "frameFill" to frameFill,
+        "detectionStage" to stage,
+        "sourceWidth" to sourceWidth,
+        "sourceHeight" to sourceHeight,
+        "segmentationMs" to segmentationMs,
+        "detectionMs" to detectionMs,
+    )
+
+    private fun CropResult.toMap(): Map<String, Any?> = mapOf(
+        "outputPath" to outputFile.absolutePath,
+        "outputFormat" to outputFormat,
+        "outputWidth" to outputWidth,
+        "outputHeight" to outputHeight,
+        "fileBytes" to fileBytes,
+        "colorMode" to colorMode.name,
         "timings" to mapOf(
             "decodeMs" to timings.decodeMs,
             "segmentationMs" to timings.segmentationMs,

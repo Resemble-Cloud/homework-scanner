@@ -40,7 +40,9 @@ import org.fairscan.imageprocessing.scaledTo
 import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
 import org.opencv.core.Core
+import org.opencv.core.CvType
 import org.opencv.core.Mat
+import org.opencv.core.MatOfPoint
 import org.opencv.imgproc.Imgproc
 import java.io.File
 
@@ -60,6 +62,60 @@ data class ScanRequest(
     /** null means "reuse FairScan's automatic colour detection". */
     val colorMode: ColorMode? = null,
     /** Cap for the decoded source bitmap (memory guard), FairScan uses 12 MP too. */
+    val maxDecodePixels: Int = 12_000_000,
+    /**
+     * Optional user-corrected quad in normalized [0,1] image coordinates
+     * (topLeft, topRight, bottomRight, bottomLeft). When present, the automatic
+     * detection is skipped and this quad drives the perspective correction,
+     * so a mis-detected page frame can never silently drop formulas again.
+     */
+    val manualQuad: List<Point>? = null,
+)
+
+/** Result of running only the paper-detection stage (no warp/enhance). */
+data class DetectResult(
+    val quad: List<Point>?,
+    /** Combined confidence: paper fill x page coverage (see [scoreQuad]). */
+    val score: Double,
+    /** Mean paper probability inside the quad. */
+    val meanProb: Double? = null,
+    /** Share of the visible paper mask the quad covers. */
+    val coverage: Double? = null,
+    /** Share of the photo the quad covers. */
+    val frameFill: Double? = null,
+    val stage: String,
+    val sourceWidth: Int,
+    val sourceHeight: Int,
+    val segmentationMs: Long,
+    val detectionMs: Long,
+)
+
+/** Result of cropping to a (manual or auto) quad, kept for the UI. */
+data class CropResult(
+    val outputFile: File,
+    val outputFormat: String,
+    val outputWidth: Int,
+    val outputHeight: Int,
+    val fileBytes: Long,
+    val colorMode: ColorMode,
+    val timings: StageTimings,
+)
+
+/** Input for the detection-only call, which skips warp/enhance entirely. */
+data class DetectRequest(
+    val sourcePath: String,
+    val maxDecodePixels: Int = 12_000_000,
+)
+
+/** Input for re-cropping with a user-corrected quad. */
+data class CropRequest(
+    val sourcePath: String,
+    val outputDir: File,
+    /** Four normalized [0,1] points: topLeft, topRight, bottomRight, bottomLeft. */
+    val quad: List<Point>,
+    val maxPixels: Long = 2_000_000,
+    val jpegQuality: Int = 80,
+    val colorMode: ColorMode? = null,
     val maxDecodePixels: Int = 12_000_000,
 )
 
@@ -100,6 +156,12 @@ class FairScanProcessor(
 ) {
     companion object {
         private const val TAG = "FairScanProcessor"
+
+        /** Corner order matches FairScan's [Quad]: topLeft, topRight, bottomRight, bottomLeft. */
+        const val CORNER_COUNT = 4
+
+        /** See [FrameScore.MIN_FRAME_FILL] for the calibration behind this value. */
+        const val MIN_FRAME_FILL = FrameScore.MIN_FRAME_FILL
     }
 
     private val segmenter = FairScanSegmenter(context, modelAssetName)
@@ -174,18 +236,36 @@ class FairScanProcessor(
             }
             // detectDocumentQuad works in mask coordinates (FairScan's
             // `extractDocumentFromBitmap` receives `quadInMask` too); everything
-            // downstream (colour detection, warping) needs source pixels.
-            val quad = quadInMask?.scaledTo(
-                segmentation.width,
-                segmentation.height,
-                bgr.cols(),
-                bgr.rows(),
+            // downstream (colour detection, warping) needs source pixels. We
+            // normalize once to [0,1] so the UI overlay can draw/edit it, then
+            // expand back to source pixels at each consumer.
+            val detectedQuad: Quad? = quadInMask?.scaledTo(
+                segmentation.width.toDouble(),
+                segmentation.height.toDouble(),
+                bgr.cols().toDouble(),
+                bgr.rows().toDouble(),
+            )?.scaledTo(
+                bgr.cols().toDouble(),
+                bgr.rows().toDouble(),
+                1.0,
+                1.0,
             )
             val detectionMs = SystemClock.elapsedRealtime() - detectStart
 
+            // Sprint 1: a user-corrected quad wins over whatever detection said,
+            // so a bad frame can never silently drop formulas again.
+            val requestedQuad: Quad? = request.manualQuad?.let(::quadFromNormalized)
+                ?: detectedQuad
+            val requestedInPixels: Quad? = requestedQuad?.scaledTo(
+                1.0,
+                1.0,
+                bgr.cols().toDouble(),
+                bgr.rows().toDouble(),
+            )
+
             val colorStart = SystemClock.elapsedRealtime()
-            val detectedColorMode = if (quad != null) {
-                autoColorMode(bgr, segmentation, quad)
+            val detectedColorMode = if (requestedInPixels != null) {
+                autoColorMode(bgr, segmentation, requestedInPixels)
             } else {
                 ColorMode.COLOR
             }
@@ -195,8 +275,14 @@ class FairScanProcessor(
             val budget = maxPixelsFor(effectiveMode, request.maxPixels)
 
             val extractStart = SystemClock.elapsedRealtime()
-            page = if (quad != null) {
-                extractDocument(bgr, quad, 0, effectiveMode, budget)
+            page = if (requestedInPixels != null) {
+                extractDocument(
+                    bgr,
+                    requestedInPixels,
+                    0,
+                    effectiveMode,
+                    budget,
+                )
             } else {
                 // No document found: never fail the whole scan, hand back the
                 // full frame downscaled to the export budget (FairScan does the same).
@@ -235,11 +321,11 @@ class FairScanProcessor(
                 outputWidth = outputWidth,
                 outputHeight = outputHeight,
                 fileBytes = bytes.size.toLong(),
-                detected = quad != null,
-                detectionStage = detectionStage,
+                detected = requestedQuad != null,
+                detectionStage = if (request.manualQuad != null) "manual" else detectionStage,
                 autoColorMode = detectedColorMode,
                 colorMode = effectiveMode,
-                quad = quad?.let {
+                quad = detectedQuad?.let {
                     listOf(it.topLeft, it.topRight, it.bottomRight, it.bottomLeft)
                 },
                 timings = StageTimings(
@@ -263,6 +349,215 @@ class FairScanProcessor(
             rgba?.release()
             bitmap.recycle()
         }
+    }
+
+    /**
+     * Runs only the segmentation + paper-detection stages and hands back the quad
+     * in normalized [0,1] coordinates, so the Flutter overlay can draw and edit it
+     * without shipping a second copy of the mask.
+     */
+    fun detectDocument(request: DetectRequest): DetectResult = synchronized(lock) {
+        ensureOpenCv()
+        segmenter.initialize()
+
+        val source = File(request.sourcePath)
+        if (!source.isFile) {
+            throw ScanFailure("SOURCE_NOT_FOUND", "找不到输入图片: ${request.sourcePath}")
+        }
+
+        val decodeStart = SystemClock.elapsedRealtime()
+        val bitmap = decodeBitmap(source, request.maxDecodePixels)
+        val decodeMs = SystemClock.elapsedRealtime() - decodeStart
+        val sourceWidth = bitmap.width
+        val sourceHeight = bitmap.height
+
+        var rgba: Mat? = null
+        var bgr: Mat? = null
+        try {
+            rgba = Mat()
+            Utils.bitmapToMat(bitmap, rgba)
+            bgr = Mat()
+            Imgproc.cvtColor(rgba, bgr, Imgproc.COLOR_RGBA2BGR)
+
+            val segStart = SystemClock.elapsedRealtime()
+            val segmentation = segmenter.segment(bitmap)
+            val segmentationMs = SystemClock.elapsedRealtime() - segStart
+
+            val detectStart = SystemClock.elapsedRealtime()
+            val (quad, stage) = detectQuad(segmentation, ImageSize(bgr.cols(), bgr.rows()))
+            val score = quad?.let { scoreQuad(segmentation, it) }
+            val detectionMs = SystemClock.elapsedRealtime() - detectStart
+
+            Log.i(
+                TAG,
+                "detect done: stage=$stage score=${"%.3f".format(score?.score ?: 0.0)} " +
+                    "(paper=${"%.3f".format(score?.meanProb ?: 0.0)} " +
+                    "coverage=${"%.3f".format(score?.coverage ?: 0.0)} " +
+                    "fill=${"%.3f".format(score?.frameFill ?: 0.0)}) " +
+                    "in ${detectionMs}ms (seg ${segmentationMs}ms)",
+            )
+
+            DetectResult(
+                quad = quad?.let {
+                    listOf(it.topLeft, it.topRight, it.bottomRight, it.bottomLeft)
+                },
+                score = score?.score ?: 0.0,
+                meanProb = score?.meanProb,
+                coverage = score?.coverage,
+                frameFill = score?.frameFill,
+                stage = stage,
+                sourceWidth = sourceWidth,
+                sourceHeight = sourceHeight,
+                segmentationMs = segmentationMs,
+                detectionMs = detectionMs,
+            )
+        } catch (failure: ScanFailure) {
+            throw failure
+        } catch (t: Throwable) {
+            Log.e(TAG, "detection failed", t)
+            throw ScanFailure("DETECT_FAILED", "纸张检测失败: ${t.message ?: t.javaClass.simpleName}", t)
+        } finally {
+            bgr?.release()
+            rgba?.release()
+            bitmap.recycle()
+        }
+    }
+
+    /**
+     * Crops to [quad] (normalized [0,1] coordinates, corner order topLeft,
+     * topRight, bottomRight, bottomLeft) then runs FairScan's perspective
+     * correction and enhancement. The source file is only ever read.
+     */
+    fun cropImage(request: CropRequest): CropResult {
+        val result = process(
+            ScanRequest(
+                sourcePath = request.sourcePath,
+                outputDir = request.outputDir,
+                maxPixels = request.maxPixels,
+                jpegQuality = request.jpegQuality,
+                colorMode = request.colorMode,
+                maxDecodePixels = request.maxDecodePixels,
+                manualQuad = request.quad,
+            ),
+        )
+        return CropResult(
+            outputFile = result.outputFile,
+            outputFormat = result.outputFormat,
+            outputWidth = result.outputWidth,
+            outputHeight = result.outputHeight,
+            fileBytes = result.fileBytes,
+            colorMode = result.colorMode,
+            timings = result.timings,
+        )
+    }
+
+    /**
+     * IMPORT first (FairScan's gallery entry point: single 0.9 threshold), then
+     * CAPTURE (multi-threshold + min-area-rect fallback) when that finds nothing.
+     * This is the exact fallback ladder FairScan ships, surfaced so callers can
+     * tell which path produced the frame. The quad is returned in normalized
+     * [0,1] coordinates so the Flutter overlay can draw it resolution-
+     * independently; re-expand to source pixels with
+     * `quad.scaledTo(1.0, 1.0, width, height)`.
+     */
+    private fun detectQuad(
+        segmentation: FairScanSegmenter.Segmentation,
+        size: ImageSize,
+    ): Pair<Quad?, String> {
+        val importQuad = detectDocumentQuad(segmentation, size, Mode.IMPORT)
+        val inMask = importQuad ?: detectDocumentQuad(segmentation, size, Mode.CAPTURE)
+            ?: return null to "none"
+        // `detectDocumentQuad` returns mask coordinates; rescale to source, then
+        // normalize so the UI overlay is resolution independent.
+        val normalized = inMask
+            .scaledTo(
+                segmentation.width.toDouble(),
+                segmentation.height.toDouble(),
+                size.width.toDouble(),
+                size.height.toDouble(),
+            )
+            .scaledTo(size.width.toDouble(), size.height.toDouble(), 1.0, 1.0)
+        return normalized to (if (importQuad != null) "import" else "capture")
+    }
+
+    /** Confidence of a detected frame, broken into its two failure modes. */
+    data class QuadScore(
+        /** Final confidence in [0,1]; the UI compares this with its threshold. */
+        val score: Double,
+        /** Mean paper probability inside the quad — "is this all page?". */
+        val meanProb: Double,
+        /** Share of the model's paper mask the quad covers — "is the whole page in frame?". */
+        val coverage: Double,
+        /** Share of the photo the quad covers — "does this frame look like a page or a strip?". */
+        val frameFill: Double,
+    )
+
+    /**
+     * Scores a detected frame against the segmentation mask. [quad] is
+     * normalized [0,1]; it is expanded to the mask's pixel grid so
+     * `fillConvexPoly` and the mask Mat agree.
+     *
+     * A high interior probability alone is not enough: a frame that lands
+     * entirely inside the page scores ~1.0 while silently cutting off formulas.
+     * The second term therefore measures how much of the *visible paper* the
+     * quad actually covers, so a frame that only grabs a strip of the page
+     * drops below the UI threshold and is routed to the corner editor.
+     */
+    private fun scoreQuad(
+        segmentation: FairScanSegmenter.Segmentation,
+        quad: Quad,
+    ): QuadScore {
+        val inMask = quad.scaledTo(
+            1.0,
+            1.0,
+            segmentation.width.toDouble(),
+            segmentation.height.toDouble(),
+        )
+        val points = listOf(inMask.topLeft, inMask.topRight, inMask.bottomRight, inMask.bottomLeft)
+            .map { org.opencv.core.Point(it.x, it.y) }
+        val poly = MatOfPoint(*points.toTypedArray())
+        val mask = Mat.zeros(segmentation.height, segmentation.width, CvType.CV_8UC1)
+        val binMask: Mat? = segmentation.toMat()
+        try {
+            Imgproc.fillConvexPoly(mask, poly, org.opencv.core.Scalar(255.0))
+            val meanProb = (Core.mean(binMask, mask).`val`[0] / 255.0).coerceIn(0.0, 1.0)
+            val paperPixels = Core.countNonZero(binMask)
+            // Overlap = (share of the quad that is paper) x (quad mask area);
+            // avoids an extra bitwise temp Mat for a plain pixel count.
+            val maskPixels = Core.countNonZero(mask).toDouble()
+            val coverage = if (paperPixels > 0 && maskPixels > 0.0) {
+                (meanProb * maskPixels / paperPixels).coerceIn(0.0, 1.0)
+            } else {
+                0.0
+            }
+            // Quad area as a share of the photo, straight from the normalized
+            // corners, so a frame that grabs a strip of the page is penalised
+            // even when that strip is 100% paper.
+            val frameFill = FrameScore.polygonArea(quad)
+            return QuadScore(
+                score = FrameScore.combine(meanProb, coverage, frameFill),
+                meanProb = meanProb,
+                coverage = coverage,
+                frameFill = frameFill,
+            )
+        } finally {
+            poly.release()
+            mask.release()
+            binMask?.release()
+        }
+    }
+
+    /** Builds a [Quad] from four normalized points, rejecting malformed input
+     *  early so a bad drag from the UI can't produce a garbage warp. */
+    private fun quadFromNormalized(points: List<Point>?): Quad {
+        if (points == null || points.size != CORNER_COUNT) {
+            throw ScanFailure("INVALID_QUAD", "四角坐标必须是 4 个点，实际 ${points?.size ?: 0} 个")
+        }
+        val quad = Quad(points[0], points[1], points[2], points[3])
+        if (!quad.isConvex()) {
+            throw ScanFailure("INVALID_QUAD", "四角顺序需要按左上、右上、右下、左下且不自交")
+        }
+        return quad
     }
 
     private fun ensureOpenCv() {
