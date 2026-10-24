@@ -24,7 +24,7 @@ class SessionStore {
     final id = _newId('doc', timestamp);
     final document = ScanDocument(
       id: id,
-      title: title ?? '扫描文档',
+      title: title ?? defaultDocumentTitle(timestamp),
       createdAt: timestamp,
       updatedAt: timestamp,
       pages: const <ScanPage>[],
@@ -51,11 +51,10 @@ class SessionStore {
     await temp.rename(file.path);
   }
 
-  /// Loads the most recently updated unexported document, if any. Exported
-  /// sessions stay on disk as history but are not reopened on cold start.
-  Future<ScanDocument?> loadRecoverable() async {
-    if (!await documentsDir.exists()) return null;
-    final candidates = <ScanDocument>[];
+  /// All documents on disk, newest first. Used by the home library.
+  Future<List<ScanDocument>> listDocuments() async {
+    if (!await documentsDir.exists()) return const <ScanDocument>[];
+    final documents = <ScanDocument>[];
     await for (final entity in documentsDir.list()) {
       if (entity is! Directory) continue;
       final file = File(p.join(entity.path, 'session.json'));
@@ -63,14 +62,23 @@ class SessionStore {
       try {
         final raw = jsonDecode(await file.readAsString());
         if (raw is! Map<String, dynamic>) continue;
-        final document = ScanDocument.fromJson(raw);
-        if (!document.isExported) candidates.add(document);
+        documents.add(ScanDocument.fromJson(raw));
       } catch (_) {
         // A half-written/corrupt session must never prevent the app launching.
       }
     }
-    candidates.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-    return candidates.isEmpty ? null : candidates.first;
+    documents.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    return documents;
+  }
+
+  /// Loads the most recently updated unexported document, if any. Exported
+  /// sessions stay on disk as history but are not reopened on cold start.
+  Future<ScanDocument?> loadRecoverable() async {
+    final documents = await listDocuments();
+    for (final document in documents) {
+      if (!document.isExported) return document;
+    }
+    return null;
   }
 
   Future<ScanDocument?> loadById(String id) async {
@@ -159,6 +167,14 @@ class SessionStore {
     if (ext == '.jpg' || ext == '.jpeg' || ext == '.png') return ext;
     return '.jpg';
   }
+}
+
+/// Produces the default document title, e.g. `扫描_20261024_2102`.
+String defaultDocumentTitle([DateTime? now]) {
+  final t = now ?? DateTime.now();
+  String two(int value) => value.toString().padLeft(2, '0');
+  return '扫描_${t.year}${two(t.month)}${two(t.day)}_'
+      '${two(t.hour)}${two(t.minute)}';
 }
 
 /// Produces the default export name, e.g. `扫描_20261024_153012.pdf`.

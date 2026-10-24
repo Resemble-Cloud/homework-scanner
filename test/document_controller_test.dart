@@ -70,6 +70,22 @@ void main() {
     }
   });
 
+  test('addCapturedPages 一次导入多张并按选择顺序入队', () async {
+    final pages = await controller.addCapturedPages([
+      fixtureJpegPath(),
+      fixtureJpegPath(),
+      fixtureJpegPath(),
+    ]);
+    await controller.waitForIdle();
+
+    expect(pages, hasLength(3));
+    expect(controller.document!.pages.map((page) => page.id), [
+      for (final page in pages) page.id,
+    ]);
+    expect(controller.document!.pages.every((page) => page.isDone), isTrue);
+    expect(engine.scanCount, 3);
+  });
+
   test('低置信度/取景占比过小时使用整图内缩 2% 并标记建议检查', () async {
     engine.detection = DetectResult(
       quad: const [(0.3, 0.1), (0.7, 0.1), (0.7, 0.9), (0.3, 0.9)],
@@ -347,6 +363,16 @@ void main() {
     expect(exporter.fitA4, isFalse);
     expect(result.path, endsWith('作业_测试.pdf'));
     expect(controller.document!.exportedAt, isNotNull);
+  });
+
+  test('openDocument 可切换到另一份文档', () async {
+    final firstId = controller.document!.id;
+    final second = await store.createDocument(title: '第二份');
+    await controller.openDocument(second.id);
+
+    expect(controller.document!.id, second.id);
+    expect(controller.document!.title, '第二份');
+    expect(controller.document!.id, isNot(firstId));
   });
 
   test('未导出会话可由新控制器恢复', () async {

@@ -197,6 +197,59 @@ class SyncSessionStore extends SessionStore {
   }
 
   @override
+  Future<ScanDocument> createDocument({String? title, DateTime? now}) async {
+    final timestamp = now ?? DateTime.now();
+    final id = 'doc_${timestamp.microsecondsSinceEpoch.toRadixString(36)}';
+    final document = ScanDocument(
+      id: id,
+      title: title ?? defaultDocumentTitle(timestamp),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      pages: const <ScanPage>[],
+    );
+    Directory(p.join(documentsDir.path, id, 'originals'))
+        .createSync(recursive: true);
+    Directory(p.join(documentsDir.path, id, 'processed'))
+        .createSync(recursive: true);
+    await save(document);
+    return document;
+  }
+
+  @override
+  Future<List<ScanDocument>> listDocuments() async {
+    if (!documentsDir.existsSync()) return const <ScanDocument>[];
+    final documents = <ScanDocument>[];
+    for (final entity in documentsDir.listSync()) {
+      if (entity is! Directory) continue;
+      final file = File(p.join(entity.path, 'session.json'));
+      if (!file.existsSync()) continue;
+      try {
+        final raw = jsonDecode(file.readAsStringSync());
+        if (raw is Map<String, dynamic>) {
+          documents.add(ScanDocument.fromJson(raw));
+        }
+      } catch (_) {
+        // Corrupt test session; ignore.
+      }
+    }
+    documents.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    return documents;
+  }
+
+  @override
+  Future<ScanDocument?> loadById(String id) async {
+    final file = sessionFile(id);
+    if (!file.existsSync()) return null;
+    try {
+      final raw = jsonDecode(file.readAsStringSync());
+      if (raw is Map<String, dynamic>) return ScanDocument.fromJson(raw);
+    } catch (_) {
+      // Corrupt test session; ignore.
+    }
+    return null;
+  }
+
+  @override
   Future<void> save(ScanDocument document) async {
     final file = sessionFile(document.id);
     file.parent.createSync(recursive: true);

@@ -51,19 +51,25 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
   }
 
-  Future<void> pumpApp(WidgetTester tester) async {
+  Future<void> pumpFrames(WidgetTester tester) async {
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+  }
+
+  Future<void> pumpApp(WidgetTester tester, {bool openDocument = true}) async {
     setUpView(tester);
     await tester.pumpWidget(HomeworkScannerApp(controller: controller));
     // The grid has no indeterminate animation once all pages are done. Pump
     // explicit frames so a regression fails an assertion rather than hanging
     // in pumpAndSettle's ten-minute window.
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
-  }
-
-  Future<void> pumpFrames(WidgetTester tester) async {
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
+    await pumpFrames(tester);
+    if (openDocument && controller.document != null) {
+      final card = find.byKey(Key('document-${controller.document!.id}'));
+      expect(card, findsOneWidget);
+      await tester.tap(card);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+    }
   }
 
   /// Controller work uses real file I/O; run it outside the fake-async zone.
@@ -158,11 +164,33 @@ void main() {
     expect(find.text('处理失败，原图未修改'), findsOneWidget);
   });
 
+  testWidgets('文档库显示多个文档并可新建第二份', (tester) async {
+    await addPages(tester, 1);
+    final second = await store.createDocument(title: '第二份作业');
+    final firstId = controller.document!.id;
+
+    await pumpApp(tester, openDocument: false);
+    expect(find.text('我的扫描'), findsOneWidget);
+    expect(find.byKey(Key('document-$firstId')), findsOneWidget);
+    expect(find.byKey(Key('document-${second.id}')), findsOneWidget);
+    expect(find.text('第二份作业'), findsOneWidget);
+
+    expect(find.byKey(const Key('scan-new-document')), findsOneWidget);
+    final third = await tester.runAsync(() async {
+      final document = await store.createDocument(title: '第三份');
+      await controller.openDocument(document.id);
+      return document;
+    });
+    await pumpFrames(tester);
+    expect(controller.document!.id, third!.id);
+    expect(controller.document!.id, isNot(firstId));
+    expect(controller.document!.id, isNot(second.id));
+    expect(controller.document!.pages, isEmpty);
+  });
+
   testWidgets('导出对话框带默认文件名并可关闭适配 A4', (tester) async {
     await addPages(tester, 2);
-    setUpView(tester);
-    await tester.pumpWidget(HomeworkScannerApp(controller: controller));
-    await pumpFrames(tester);
+    await pumpApp(tester);
 
     await tester.tap(find.byKey(const Key('export-button')));
     await pumpFrames(tester);

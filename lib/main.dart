@@ -1,11 +1,9 @@
-import 'dart:async';
-
 import 'package:fairscan_engine/fairscan_engine.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
-import 'features/document/document_screen.dart';
+import 'features/documents/document_library_page.dart';
 import 'services/document_controller.dart';
 import 'services/pdf_export_service.dart';
 import 'services/session_store.dart';
@@ -21,7 +19,6 @@ Future<void> main() async {
     store: store,
     exporter: const PdfExportService(),
   );
-  await controller.initialize();
   runApp(HomeworkScannerApp(controller: controller));
 }
 
@@ -30,11 +27,13 @@ class HomeworkScannerApp extends StatelessWidget {
     super.key,
     required this.controller,
     this.pickImage,
+    this.pickImages,
     this.sharePdfCallback,
   });
 
   final DocumentController controller;
   final Future<String?> Function()? pickImage;
+  final Future<List<String>> Function()? pickImages;
   final PdfShareCallback? sharePdfCallback;
 
   @override
@@ -47,9 +46,10 @@ class HomeworkScannerApp extends StatelessWidget {
         useMaterial3: true,
         scaffoldBackgroundColor: const Color(0xFFF7F8F6),
       ),
-      home: DocumentScreen(
+      home: DocumentLibraryPage(
         controller: controller,
         pickImage: pickImage,
+        pickImages: pickImages,
         sharePdfCallback: sharePdfCallback,
       ),
     );

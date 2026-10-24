@@ -18,11 +18,13 @@ class DocumentScreen extends StatefulWidget {
     super.key,
     required this.controller,
     this.pickImage,
+    this.pickImages,
     this.sharePdfCallback,
   });
 
   final DocumentController controller;
   final Future<String?> Function()? pickImage;
+  final Future<List<String>> Function()? pickImages;
   final PdfShareCallback? sharePdfCallback;
 
   @override
@@ -32,9 +34,9 @@ class DocumentScreen extends StatefulWidget {
 class _DocumentScreenState extends State<DocumentScreen> {
   bool _importing = false;
 
-  Future<String?> _defaultPickImage() async {
-    final picked = await ImagePicker().pickImage(source: ImageSource.gallery);
-    return picked?.path;
+  Future<List<String>> _defaultPickImages() async {
+    final picked = await ImagePicker().pickMultiImage();
+    return [for (final file in picked) file.path];
   }
 
   Future<void> _openCamera() async {
@@ -46,14 +48,22 @@ class _DocumentScreenState extends State<DocumentScreen> {
     );
   }
 
-  Future<void> _importPage() async {
+  Future<void> _importPages() async {
     if (_importing) return;
     setState(() => _importing = true);
     try {
-      final path = await (widget.pickImage ?? _defaultPickImage)();
-      if (path == null) return;
-      await widget.controller.addCapturedPage(path, captureSource: 'import');
-      if (mounted) _snack('已加入队列，后台处理中');
+      final paths = widget.pickImages != null
+          ? await widget.pickImages!()
+          : widget.pickImage != null
+          ? [if (await widget.pickImage!() case final String path) path]
+          : await _defaultPickImages();
+      if (paths.isEmpty) return;
+      await widget.controller.addCapturedPages(paths, captureSource: 'import');
+      if (mounted) {
+        _snack(
+          paths.length == 1 ? '已加入队列，后台处理中' : '已导入 ${paths.length} 页，后台处理中',
+        );
+      }
     } catch (error) {
       if (mounted) _snack('导入失败：$error');
     } finally {
@@ -133,7 +143,7 @@ class _DocumentScreenState extends State<DocumentScreen> {
                 tooltip: '从相册导入',
                 onPressed: _importing || controller.isExporting
                     ? null
-                    : _importPage,
+                    : _importPages,
                 icon: _importing
                     ? const SizedBox(
                         width: 20,
@@ -157,7 +167,7 @@ class _DocumentScreenState extends State<DocumentScreen> {
                       !controller.isProcessing,
                   exporting: controller.isExporting,
                   onCapture: controller.isExporting ? null : _openCamera,
-                  onImport: controller.isExporting ? null : _importPage,
+                  onImport: controller.isExporting ? null : _importPages,
                   onExport: _exportPdf,
                 ),
         );
@@ -192,7 +202,7 @@ class _DocumentScreenState extends State<DocumentScreen> {
       );
     }
     if (document == null || document.pages.isEmpty) {
-      return _EmptyState(onCapture: _openCamera, onImport: _importPage);
+      return _EmptyState(onCapture: _openCamera, onImport: _importPages);
     }
     return Column(
       children: [

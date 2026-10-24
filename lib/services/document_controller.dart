@@ -90,54 +90,73 @@ class DocumentController extends ChangeNotifier {
       await store.documentsDir.create(recursive: true);
       ScanDocument? loaded = recover ? await store.loadRecoverable() : null;
       loaded ??= await store.createDocument();
-      _document = loaded;
-      _loading = false;
-      _notify();
-
-      // A killed process leaves pages in `processing`. Requeue those, plus
-      // completed pages whose output vanished; failed pages stay failed until
-      // the user explicitly retries.
-      final resumed = <String>[];
-      for (final page in loaded.pages) {
-        final missingOutput =
-            page.status == PageStatus.done &&
-            (page.processedPath == null ||
-                !await File(page.processedPath!).exists());
-        if (page.status == PageStatus.queued ||
-            page.status == PageStatus.processing ||
-            missingOutput) {
-          final pageIndex = _document!.pages.indexWhere((p) => p.id == page.id);
-          if (pageIndex >= 0) {
-            _replacePageAt(
-              pageIndex,
-              page.copyWith(
-                status: PageStatus.queued,
-                clearError: true,
-                needsReview: page.needsReview,
-              ),
-              touchExport: false,
-            );
-            resumed.add(page.id);
-          }
-        }
-      }
-      if (resumed.isNotEmpty) {
-        await _persist();
-        for (final id in resumed) {
-          _enqueue(id);
-        }
-      }
-      unawaited(
-        engine.initialize().catchError((Object error) {
-          _lastOperationError = '扫描引擎初始化失败：$error';
-          _notify();
-        }),
-      );
+      await _activateDocument(loaded);
     } catch (error) {
       _loading = false;
       _fatalError = '$error';
       _notify();
     }
+  }
+
+  /// Opens an existing document from the home library. Waits for any current
+  /// queue to finish so pages from two documents never enter the engine at once.
+  Future<void> openDocument(String documentId) async {
+    if (_exporting) throw StateError('正在导出，请稍后再切换文档');
+    await waitForIdle();
+    final loaded = await store.loadById(documentId);
+    if (loaded == null) throw StateError('文档不存在或已损坏');
+    _loading = true;
+    _fatalError = null;
+    _lastOperationError = null;
+    _lastExport = null;
+    _notify();
+    await _activateDocument(loaded);
+  }
+
+  Future<void> _activateDocument(ScanDocument loaded) async {
+    _document = loaded;
+    _loading = false;
+    _notify();
+
+    // A killed process leaves pages in `processing`. Requeue those, plus
+    // completed pages whose output vanished; failed pages stay failed until
+    // the user explicitly retries.
+    final resumed = <String>[];
+    for (final page in loaded.pages) {
+      final missingOutput =
+          page.status == PageStatus.done &&
+          (page.processedPath == null ||
+              !File(page.processedPath!).existsSync());
+      if (page.status == PageStatus.queued ||
+          page.status == PageStatus.processing ||
+          missingOutput) {
+        final pageIndex = _document!.pages.indexWhere((p) => p.id == page.id);
+        if (pageIndex >= 0) {
+          _replacePageAt(
+            pageIndex,
+            page.copyWith(
+              status: PageStatus.queued,
+              clearError: true,
+              needsReview: page.needsReview,
+            ),
+            touchExport: false,
+          );
+          resumed.add(page.id);
+        }
+      }
+    }
+    if (resumed.isNotEmpty) {
+      await _persist();
+      for (final id in resumed) {
+        _enqueue(id);
+      }
+    }
+    unawaited(
+      engine.initialize().catchError((Object error) {
+        _lastOperationError = '扫描引擎初始化失败：$error';
+        _notify();
+      }),
+    );
   }
 
   /// Adds a camera/import file in call order and returns the newly queued page.
@@ -180,6 +199,25 @@ class DocumentController extends ChangeNotifier {
       _enqueue(page.id);
       return page;
     });
+  }
+
+  /// Imports multiple gallery paths in the order the user selected them.
+  Future<List<ScanPage>> addCapturedPages(
+    List<String> sourcePaths, {
+    String captureSource = 'import',
+    ScanColorMode? colorMode,
+  }) async {
+    final pages = <ScanPage>[];
+    for (final path in sourcePaths) {
+      pages.add(
+        await addCapturedPage(
+          path,
+          captureSource: captureSource,
+          colorMode: colorMode,
+        ),
+      );
+    }
+    return pages;
   }
 
   /// Replaces an existing page's original and keeps its position/number.
