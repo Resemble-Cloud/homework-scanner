@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:homework_scanner/main.dart';
 import 'package:homework_scanner/models/scan_document.dart';
+import 'package:homework_scanner/models/scan_settings.dart';
 import 'package:homework_scanner/services/document_controller.dart';
 import 'package:homework_scanner/services/session_store.dart';
 
@@ -186,6 +187,23 @@ void main() {
     expect(controller.document!.id, isNot(firstId));
     expect(controller.document!.id, isNot(second.id));
     expect(controller.document!.pages, isEmpty);
+  });
+
+  testWidgets('设置页可修改默认色彩和默认裁切', (tester) async {
+    await pumpApp(tester, openDocument: false);
+    await tester.tap(find.byKey(const Key('settings-action')));
+    await pumpFrames(tester);
+    expect(find.text('扫描设置'), findsOneWidget);
+    expect(controller.settings.defaultColorMode, ScanColorMode.grayscale);
+    expect(controller.settings.defaultCropMode, DefaultCropMode.auto);
+
+    await tester.tap(find.byKey(const Key('settings-color-COLOR')));
+    await pumpFrames(tester);
+    expect(controller.settings.defaultColorMode, ScanColorMode.color);
+
+    await tester.tap(find.byKey(const Key('settings-crop-detector')));
+    await pumpFrames(tester);
+    expect(controller.settings.defaultCropMode, DefaultCropMode.detector);
   });
 
   testWidgets('导出对话框带默认文件名并可关闭适配 A4', (tester) async {

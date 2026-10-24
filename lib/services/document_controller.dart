@@ -7,8 +7,10 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 
 import '../models/scan_document.dart';
+import '../models/scan_settings.dart';
 import 'pdf_export_service.dart';
 import 'session_store.dart';
+import 'settings_store.dart';
 
 /// Confidence below this means the detected frame may clip page content.
 const double kAutoQuadScoreThreshold = 0.85;
@@ -49,15 +51,32 @@ class DocumentController extends ChangeNotifier {
     required this.engine,
     required this.store,
     required this.exporter,
-    this.defaultColorMode = ScanColorMode.auto,
+    ScanColorMode defaultColorMode = ScanColorMode.auto,
+    ScanSettings? initialSettings,
+    this.settingsStore,
     this.maxPixels = kPageMaxPixels,
-  });
+  }) : _settings =
+           initialSettings ?? ScanSettings(defaultColorMode: defaultColorMode);
 
   final ScanEngine engine;
   final SessionStore store;
   final PdfExporter exporter;
-  final ScanColorMode defaultColorMode;
+  final SettingsStore? settingsStore;
   final int maxPixels;
+  ScanSettings _settings;
+
+  ScanSettings get settings => _settings;
+
+  Future<void> updateSettings(ScanSettings next) async {
+    _settings = next;
+    _notify();
+    try {
+      await settingsStore?.save(next);
+    } catch (error) {
+      _lastOperationError = '保存设置失败：$error';
+      _notify();
+    }
+  }
 
   ScanDocument? _document;
   bool _loading = true;
@@ -183,7 +202,7 @@ class DocumentController extends ChangeNotifier {
       final page = ScanPage(
         id: pageId,
         originalPath: originalPath,
-        colorMode: colorMode ?? defaultColorMode,
+        colorMode: colorMode ?? _settings.defaultColorMode,
         status: PageStatus.queued,
         createdAt: now,
         captureSource: captureSource,
@@ -674,6 +693,59 @@ class DocumentController extends ChangeNotifier {
               candidate.frameFill >= kAutoQuadMinFrameFill,
         )
         .toList(growable: false);
+
+    final preference = _settings.defaultCropMode;
+    if (preference == DefaultCropMode.detector) {
+      final detected = candidates.where((candidate) {
+        final source = _sourceFor(candidate.source);
+        return (source == QuadSource.import || source == QuadSource.capture) &&
+            candidate.quad.length == 4;
+      }).toList()..sort((a, b) => b.score.compareTo(a.score));
+      if (detected.isNotEmpty) {
+        final candidate = detected.first;
+        final risky = candidate.coverage < 0.97 || candidate.background > 0.25;
+        return _QuadChoice(
+          quad: candidate.quad,
+          source: _sourceFor(candidate.source),
+          needsReview: risky,
+          reason: risky
+              ? '按设置优先使用检测框（保留约 ${(candidate.coverage * 100).round()}% 纸面），建议检查边缘'
+              : null,
+          candidates: candidates,
+          detection: detection,
+        );
+      }
+    }
+    if (preference == DefaultCropMode.paperOuter) {
+      final outerCandidates =
+          candidates
+              .where(
+                (candidate) =>
+                    _sourceFor(candidate.source) == QuadSource.paperOuter &&
+                    candidate.quad.length == 4,
+              )
+              .toList()
+            ..sort((a, b) => a.background.compareTo(b.background));
+      if (outerCandidates.isNotEmpty) {
+        return _QuadChoice(
+          quad: outerCandidates.first.quad,
+          source: QuadSource.paperOuter,
+          needsReview: true,
+          reason: '按设置优先使用纸面外框，建议检查边缘',
+          candidates: candidates,
+          detection: detection,
+        );
+      }
+    }
+    if (preference == DefaultCropMode.whole) {
+      return _QuadChoice(
+        quad: kDefaultInsetQuad,
+        source: QuadSource.fallback,
+        needsReview: false,
+        candidates: candidates,
+        detection: detection,
+      );
+    }
 
     // Normal high-confidence detections stay first so Sprint 2 behaviour is
     // unchanged for easy pages.

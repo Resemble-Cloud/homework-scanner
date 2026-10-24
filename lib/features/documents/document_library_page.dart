@@ -6,6 +6,7 @@ import '../../models/scan_document.dart';
 import '../../services/document_controller.dart';
 import '../../services/share_service.dart';
 import '../document/document_screen.dart';
+import '../settings/settings_page.dart';
 
 /// Minimal document library: one card per scan session, one primary action to
 /// start a new scan. Keeping this screen at the root is what allows a session
@@ -104,6 +105,16 @@ class _DocumentLibraryPageState extends State<DocumentLibraryPage> {
       appBar: AppBar(
         title: const Text('我的扫描'),
         actions: [
+          IconButton(
+            key: const Key('settings-action'),
+            tooltip: '扫描设置',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => SettingsPage(controller: widget.controller),
+              ),
+            ),
+            icon: const Icon(Icons.settings_outlined),
+          ),
           IconButton(
             key: const Key('new-document-action'),
             tooltip: '新建文档',

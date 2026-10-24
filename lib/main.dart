@@ -7,6 +7,7 @@ import 'features/documents/document_library_page.dart';
 import 'services/document_controller.dart';
 import 'services/pdf_export_service.dart';
 import 'services/session_store.dart';
+import 'services/settings_store.dart';
 import 'services/share_service.dart';
 
 Future<void> main() async {
@@ -14,10 +15,14 @@ Future<void> main() async {
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   final root = await getApplicationDocumentsDirectory();
   final store = SessionStore(root: root);
+  final settingsStore = SettingsStore(root: root);
+  final settings = await settingsStore.load();
   final controller = DocumentController(
     engine: FairScanEngine(),
     store: store,
     exporter: const PdfExportService(),
+    initialSettings: settings,
+    settingsStore: settingsStore,
   );
   runApp(HomeworkScannerApp(controller: controller));
 }

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:fairscan_engine/fairscan_engine.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:homework_scanner/models/scan_document.dart';
+import 'package:homework_scanner/models/scan_settings.dart';
 import 'package:homework_scanner/services/document_controller.dart';
 import 'package:homework_scanner/services/pdf_export_service.dart';
 import 'package:homework_scanner/services/session_store.dart';
@@ -297,6 +298,88 @@ void main() {
 
     expect(controller.pageById(page.id)!.shadowFlatten, isFalse);
     expect(engine.lastOptions?.shadowFlatten, isFalse);
+  });
+
+  test('默认设置为灰度，新页面直接使用灰度模式', () async {
+    await controller.updateSettings(
+      const ScanSettings(
+        defaultColorMode: ScanColorMode.grayscale,
+        defaultCropMode: DefaultCropMode.auto,
+      ),
+    );
+    final page = await controller.addCapturedPage(fixtureJpegPath());
+    await controller.waitForIdle();
+
+    expect(controller.pageById(page.id)!.colorMode, ScanColorMode.grayscale);
+    expect(engine.lastOptions?.colorMode, ScanColorMode.grayscale);
+  });
+
+  test('默认裁切选检测框时优先使用检测框并保留切边警告', () async {
+    await controller.updateSettings(
+      const ScanSettings(
+        defaultColorMode: ScanColorMode.grayscale,
+        defaultCropMode: DefaultCropMode.detector,
+      ),
+    );
+    engine.detection = DetectResult(
+      quad: const [(0.3, 0.1), (0.7, 0.1), (0.7, 0.9), (0.3, 0.9)],
+      score: 0.5,
+      meanProb: 0.95,
+      coverage: 0.55,
+      frameFill: 0.35,
+      detectionStage: 'capture',
+      sourceWidth: 900,
+      sourceHeight: 1200,
+      segmentationMs: 40,
+      detectionMs: 5,
+      candidates: const [
+        QuadCandidate(
+          source: 'capture',
+          quad: [(0.3, 0.1), (0.7, 0.1), (0.7, 0.9), (0.3, 0.9)],
+          score: 0.5,
+          meanProb: 0.95,
+          coverage: 0.55,
+          frameFill: 0.35,
+        ),
+        QuadCandidate(
+          source: 'paper_outer',
+          quad: [(0.02, 0.02), (0.98, 0.02), (0.98, 0.98), (0.02, 0.98)],
+          score: 0.7,
+          meanProb: 0.7,
+          coverage: 1,
+          frameFill: 0.92,
+        ),
+        QuadCandidate(
+          source: 'default',
+          quad: [(0.02, 0.02), (0.98, 0.02), (0.98, 0.98), (0.02, 0.98)],
+          score: 0.7,
+          meanProb: 0.7,
+          coverage: 1,
+          frameFill: 0.92,
+        ),
+      ],
+    );
+
+    final page = await controller.addCapturedPage(fixtureJpegPath());
+    await controller.waitForIdle();
+
+    final done = controller.pageById(page.id)!;
+    expect(done.quadSource, QuadSource.capture);
+    expect(done.needsReview, isTrue);
+    expect(done.reviewReason, contains('按设置优先使用检测框'));
+  });
+
+  test('默认裁切选整图时使用整图内缩 2%', () async {
+    await controller.updateSettings(
+      const ScanSettings(defaultCropMode: DefaultCropMode.whole),
+    );
+    final page = await controller.addCapturedPage(fixtureJpegPath());
+    await controller.waitForIdle();
+
+    final done = controller.pageById(page.id)!;
+    expect(done.quadSource, QuadSource.fallback);
+    expect(done.quad, kDefaultInsetQuad);
+    expect(done.needsReview, isFalse);
   });
 
   test('处理失败保留原图，重试后成功且不覆盖原图', () async {

@@ -1,4 +1,4 @@
-# homework_scanner · Sprint 5
+# homework_scanner · Sprint 6
 
 Flutter 作业扫描 App：**连续拍照 → 后台逐页 FairScan 处理 → 多页修正/排序 → 一个 PDF**。
 
@@ -9,6 +9,7 @@ Flutter 作业扫描 App：**连续拍照 → 后台逐页 FairScan 处理 → �
 
 - **多文档**：启动进入“我的扫描”文档库，可新建/继续第二份文档，不再一份结束就卡住
 - **相册多选**：一次选择多张图片，按选择顺序批量加入当前文档
+- **扫描设置**：可设默认色彩（默认灰度）和默认裁切（自动/检测框/纸面外框/整图 2%），只影响新页面
 - 全屏 CameraX 相机（Flutter `camera` 插件），最高可用分辨率、闪光灯、A4 参考框
 - 连拍即入队；后台串行处理，缩略图条显示排队/处理中/完成/失败，不阻塞下一次拍摄
 - 多页文档：原图始终保留，单页重新裁剪（Sprint 1 四角编辑器）、切色彩模式重处理、重拍、删除
@@ -27,8 +28,10 @@ Flutter 作业扫描 App：**连续拍照 → 后台逐页 FairScan 处理 → �
 lib/
   main.dart                          # 依赖装配、启动恢复
   models/scan_document.dart          # 文档/页面模型、JSON、四角来源
+  models/scan_settings.dart          # 默认色彩/裁切设置
   services/
     session_store.dart               # 会话目录 + JSON
+    settings_store.dart              # scan_settings.json 读写
     document_controller.dart         # 串行队列、兜底、重拍/排序/恢复/导出
     pdf_export_service.dart          # 串行 PDF 组装
     share_service.dart               # 系统分享
@@ -38,6 +41,7 @@ lib/
   widgets/                            # 四角编辑器、状态缩略图
 packages/fairscan_engine/             # Android 原生 FairScan 桥接与算法
 test/                                 # 模型/控制器/PDF/Widget 测试
+docs/Sprint6-验收报告.md              # 默认色彩/默认裁切设置
 docs/Sprint5-验收报告.md              # 多文档与多选导入
 docs/Sprint4-修复记录.md              # 裁切结果缓存修复
 docs/Sprint3-验收报告.md              # 候选/去阴影
@@ -45,6 +49,7 @@ docs/sprint3/                         # 候选对比、样张输出、metrics
 evidence/sprint3/                     # 模拟器截图
 evidence/sprint4/                     # 裁切结果截图
 evidence/sprint5/                     # 文档库/多选导入截图
+evidence/sprint6/                     # 设置页/灰度结果截图
 ```
 
 ## 环境（本机实测）
@@ -96,6 +101,8 @@ flutter build apk --release --target-platform android-arm64 --split-per-abi
 ## 已知限制
 
 - 多文档 MVP 不做文档删除/重命名/文件夹管理；切换文档会等待当前队列处理完成。
+- 默认裁切选“检测框”更紧，但摊开笔记本可能切半页；低内容时会保留“建议检查”，不会静默接受。
+- 设置只影响之后新增页面，不回溯修改已有页面；没有“重置设置”入口。
 - 最近仍只在 Android 模拟器（x86_64 / API 36）验证；**没有实体手机**，真机相机、长按手势、
   手机 PDF 阅读器仍未验收。
 - 纸面外框是矩形近似，会包进少量桌面/键盘角落；摊开笔记本的真机样本仍需验证。
@@ -103,7 +110,7 @@ flutter build apk --release --target-platform android-arm64 --split-per-abi
 - 当前策略仍偏保守，部分页面会显示“建议检查”；阈值为 Sprint 1 的 3 张样本标定，需要真机重新校准。
 - 实时边缘检测未做（后续项）。
 
-详见 [Sprint 5 验收报告](docs/Sprint5-验收报告.md)。
+详见 [Sprint 6 验收报告](docs/Sprint6-验收报告.md)。
 
 ## 许可证
 
