@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Resemble-Cloud/homework-scanner/raw/release-apk/homework-scanner-v1.0.0-arm64.apk">
+  <a href="https://github.com/Resemble-Cloud/homework-scanner/releases/download/v1.0.0/app-arm64-v8a-release.apk">
     <img src="https://img.shields.io/badge/⬇_下载-APK_v1.0.0-2E6F5E?style=for-the-badge" alt="下载 APK">
   </a>
 </p>
@@ -45,13 +45,11 @@
 
 当前版本 **v1.0.0**，arm64 安装包约 53 MB：
 
-- [下载 homework-scanner-v1.0.0-arm64.apk](https://github.com/Resemble-Cloud/homework-scanner/raw/release-apk/homework-scanner-v1.0.0-arm64.apk)
+- [下载 APK](https://github.com/Resemble-Cloud/homework-scanner/releases/download/v1.0.0/app-arm64-v8a-release.apk)
+- [Release 页面](https://github.com/Resemble-Cloud/homework-scanner/releases/tag/v1.0.0)
 - SHA-256：`cb63d10f4c01482bf882bc71bf2b0f0563d514ab8744e42c363d58b57287927e`
 
 要求 Android 8.0（API 26）及以上，安装时允许“安装未知来源应用”。
-
-> APK 暂放在 `release-apk` 分支；GitHub Actions/Releases 因账号 billing
-> 限制暂不可用，后续恢复后会迁移到正式 Release。
 
 ---
 
