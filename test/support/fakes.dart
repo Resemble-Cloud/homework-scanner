@@ -234,16 +234,16 @@ class SyncSessionStore extends SessionStore {
     String pageId,
     String sourcePath,
   ) async {
+    final version = DateTime.now().microsecondsSinceEpoch;
     final target = File(
       p.join(
         documentsDir.path,
         documentId,
         'processed',
-        '$pageId${_ext(sourcePath)}',
+        '${pageId}_$version${_ext(sourcePath)}',
       ),
     );
     target.parent.createSync(recursive: true);
-    if (target.existsSync()) target.deleteSync();
     File(sourcePath).copySync(target.path);
     return target.path;
   }

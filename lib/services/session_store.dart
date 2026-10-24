@@ -117,11 +117,18 @@ class SessionStore {
       throw FileSystemException('处理结果不存在', sourcePath);
     }
     final extension = _safeExtension(sourcePath);
+    // A versioned filename is intentional: Flutter's ImageCache keys by path.
+    // Reusing `pageId.jpg` made reprocessed pages keep showing the old bitmap.
+    final version = DateTime.now().microsecondsSinceEpoch;
     final target = File(
-      p.join(documentsDir.path, documentId, 'processed', '$pageId$extension'),
+      p.join(
+        documentsDir.path,
+        documentId,
+        'processed',
+        '${pageId}_$version$extension',
+      ),
     );
     await target.parent.create(recursive: true);
-    if (await target.exists()) await target.delete();
     await source.copy(target.path);
     return target.path;
   }

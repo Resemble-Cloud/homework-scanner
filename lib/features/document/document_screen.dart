@@ -493,6 +493,7 @@ class _PageTile extends StatelessWidget {
                   if (file.existsSync())
                     Image.file(
                       file,
+                      key: ValueKey(file.path),
                       fit: BoxFit.cover,
                       cacheWidth: 700,
                       errorBuilder: (_, _, _) => const ColoredBox(

@@ -295,6 +295,7 @@ class _PagePreview extends StatelessWidget {
               maxScale: 5,
               child: Image.file(
                 file,
+                key: ValueKey(file.path),
                 fit: BoxFit.contain,
                 errorBuilder: (_, _, _) => const Center(
                   child: Text('无法读取图片', style: TextStyle(color: Colors.white)),

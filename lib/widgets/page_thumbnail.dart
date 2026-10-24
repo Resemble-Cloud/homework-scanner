@@ -34,6 +34,7 @@ class PageThumbnail extends StatelessWidget {
     Widget image = file.existsSync()
         ? Image.file(
             file,
+            key: ValueKey(file.path),
             fit: BoxFit.cover,
             cacheWidth: (width * 3).round(),
             errorBuilder: (_, _, _) =>

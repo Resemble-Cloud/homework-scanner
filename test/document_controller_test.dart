@@ -206,6 +206,29 @@ void main() {
     expect(engine.lastOptions?.quad, outer.quad);
   });
 
+  test('手动四角重处理生成新结果路径并删除旧图', () async {
+    final page = await controller.addCapturedPage(fixtureJpegPath());
+    await controller.waitForIdle();
+    final before = controller.pageById(page.id)!;
+    final oldPath = before.processedPath!;
+
+    const manualQuad = <NormalizedPoint>[
+      (0.1, 0.1),
+      (0.9, 0.1),
+      (0.9, 0.9),
+      (0.1, 0.9),
+    ];
+    await controller.setManualQuad(page.id, manualQuad);
+    await controller.waitForIdle();
+
+    final after = controller.pageById(page.id)!;
+    expect(after.quadSource, QuadSource.manual);
+    expect(after.quad, manualQuad);
+    expect(after.processedPath, isNot(oldPath));
+    expect(File(oldPath).existsSync(), isFalse);
+    expect(engine.lastOptions?.quad, manualQuad);
+  });
+
   test('检测框只占画面 28% 时即使内容覆盖高也不采用', () async {
     engine.detection = DetectResult(
       quad: const [(0.29, 0.06), (0.97, 0.01), (1.0, 0.43), (0.32, 0.48)],
@@ -283,7 +306,9 @@ void main() {
   test('切换色彩模式会保留四角并只重新入队该页', () async {
     final page = await controller.addCapturedPage(fixtureJpegPath());
     await controller.waitForIdle();
-    final firstQuad = controller.pageById(page.id)!.quad;
+    final before = controller.pageById(page.id)!;
+    final firstQuad = before.quad;
+    final firstPath = before.processedPath!;
     final firstScanCount = engine.scanCount;
 
     await controller.setColorMode(page.id, ScanColorMode.blackAndWhite);
@@ -292,6 +317,9 @@ void main() {
     final updated = controller.pageById(page.id)!;
     expect(updated.colorMode, ScanColorMode.blackAndWhite);
     expect(updated.quad, firstQuad);
+    expect(updated.processedPath, isNot(firstPath));
+    expect(File(firstPath).existsSync(), isFalse);
+    expect(File(updated.processedPath!).existsSync(), isTrue);
     expect(engine.scanCount, firstScanCount + 1);
     expect(engine.lastOptions?.colorMode, ScanColorMode.blackAndWhite);
     expect(engine.detectCount, 1, reason: '重处理应复用四角，不重复检测');

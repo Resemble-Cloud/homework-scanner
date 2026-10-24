@@ -277,6 +277,7 @@ class DocumentController extends ChangeNotifier {
     final index = _indexOf(pageId);
     if (index < 0) return;
     final page = _document!.pages[index];
+    final oldProcessed = page.processedPath;
     _replacePageAt(
       index,
       page.copyWith(
@@ -292,6 +293,7 @@ class DocumentController extends ChangeNotifier {
     );
     _notify();
     await _persist();
+    await _deleteQuietly(oldProcessed);
     _enqueue(pageId);
   }
 
@@ -300,6 +302,7 @@ class DocumentController extends ChangeNotifier {
     final index = _indexOf(pageId);
     if (index < 0) return;
     final page = _document!.pages[index];
+    final oldProcessed = page.processedPath;
     _replacePageAt(
       index,
       page.copyWith(
@@ -315,6 +318,7 @@ class DocumentController extends ChangeNotifier {
     );
     _notify();
     await _persist();
+    await _deleteQuietly(oldProcessed);
     _enqueue(pageId);
   }
 
@@ -330,6 +334,7 @@ class DocumentController extends ChangeNotifier {
     final index = _indexOf(pageId);
     if (index < 0) return;
     final page = _document!.pages[index];
+    final oldProcessed = page.processedPath;
     final source = _sourceFor(candidate.source);
     final lowContent = candidate.coverage < 0.97;
     final review =
@@ -360,6 +365,7 @@ class DocumentController extends ChangeNotifier {
     );
     _notify();
     await _persist();
+    await _deleteQuietly(oldProcessed);
     _enqueue(pageId);
   }
 
@@ -550,6 +556,13 @@ class DocumentController extends ChangeNotifier {
         result.outputPath,
       );
       await _deleteQuietly(result.outputPath);
+      // Keep the previous result until the new copy succeeded, then remove it.
+      // The new path also invalidates Flutter's path-keyed ImageCache.
+      final previousProcessedPath = current.processedPath;
+      if (previousProcessedPath != null &&
+          previousProcessedPath != processedPath) {
+        await _deleteQuietly(previousProcessedPath);
+      }
 
       final processedIndex = _indexOf(pageId);
       if (processedIndex < 0) return;
