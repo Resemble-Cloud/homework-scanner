@@ -8,6 +8,7 @@ import 'package:homework_scanner/models/scan_document.dart';
 import 'package:homework_scanner/models/scan_settings.dart';
 import 'package:homework_scanner/services/document_controller.dart';
 import 'package:homework_scanner/services/session_store.dart';
+import 'package:homework_scanner/services/settings_store.dart';
 
 import 'support/fakes.dart';
 
@@ -234,4 +235,92 @@ void main() {
     // Actual export invocation/ordering is covered by the controller test.
     expect(exporter.calls, 0);
   });
+
+  testWidgets('设置页把修改交给注入的 SettingsStore', (tester) async {
+    final recordingStore = RecordingSettingsStore(root: temp);
+    controller.dispose();
+    controller = DocumentController(
+      engine: engine,
+      store: store,
+      exporter: exporter,
+      initialSettings: const ScanSettings(
+        defaultColorMode: ScanColorMode.grayscale,
+        defaultCropMode: DefaultCropMode.auto,
+      ),
+      settingsStore: recordingStore,
+    );
+
+    await pumpApp(tester, openDocument: false);
+    await tester.tap(find.byKey(const Key('settings-action')));
+    await pumpFrames(tester);
+
+    await tester.tap(find.byKey(const Key('settings-color-BLACK_AND_WHITE')));
+    await pumpFrames(tester);
+    expect(
+      recordingStore.saved?.defaultColorMode,
+      ScanColorMode.blackAndWhite,
+    );
+
+    await tester.tap(find.byKey(const Key('settings-crop-detector')));
+    await pumpFrames(tester);
+    expect(
+      recordingStore.saved?.defaultColorMode,
+      ScanColorMode.blackAndWhite,
+    );
+    expect(
+      recordingStore.saved?.defaultCropMode,
+      DefaultCropMode.detector,
+    );
+    // 两次修改各写一次，没有多余的保存。
+    expect(recordingStore.saves, hasLength(2));
+  });
+
+  testWidgets('空文档库展示空状态和扫描第一份文档入口', (tester) async {
+    // 同步建目录：testWidgets 的 fake async 里 await 真实文件 I/O 会卡住。
+    // 目录建在 setUp 的临时目录下，由 tearDown 统一清理。
+    final emptyRoot = Directory(
+      '${temp.path}/empty_library',
+    )..createSync(recursive: true);
+    controller.dispose();
+    controller = DocumentController(
+      engine: engine,
+      store: SyncSessionStore(root: emptyRoot),
+      exporter: exporter,
+    );
+    // 刻意不调用 initialize()：真实启动会自动创建第一份文档，
+    // 这里要验证的正是“一份文档都没有”的空状态。
+
+    await pumpApp(tester, openDocument: false);
+
+    expect(find.text('我的扫描'), findsOneWidget);
+    expect(find.text('还没有扫描文档'), findsOneWidget);
+    expect(find.text('扫描第一份文档'), findsOneWidget);
+    expect(find.byKey(const Key('empty-new-document')), findsOneWidget);
+    expect(find.byKey(const Key('scan-new-document')), findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget.key is ValueKey<String> &&
+            (widget.key! as ValueKey<String>).value.startsWith('document-'),
+      ),
+      findsNothing,
+    );
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+  });
+}
+
+/// Test-only settings store: records the last written [ScanSettings] without
+/// touching the disk, so the widget test can assert the settings page reaches
+/// the persistence layer without mixing real file I/O into fake async.
+class RecordingSettingsStore extends SettingsStore {
+  RecordingSettingsStore({required super.root});
+
+  final List<ScanSettings> saves = <ScanSettings>[];
+
+  ScanSettings? get saved => saves.isEmpty ? null : saves.last;
+
+  @override
+  Future<void> save(ScanSettings settings) async {
+    saves.add(settings);
+  }
 }

@@ -48,4 +48,29 @@ void main() {
     expect(fallback.defaultColorMode, ScanColorMode.grayscale);
     expect(fallback.defaultCropMode, DefaultCropMode.auto);
   });
+
+  test('SettingsStore 遇到合法但非对象的 JSON 时回落默认值', () async {
+    final temp = await Directory.systemTemp.createTemp('scanner_settings_shape_');
+    addTearDown(() async {
+      if (await temp.exists()) await temp.delete(recursive: true);
+    });
+    final store = SettingsStore(root: temp);
+
+    // `{broken` 是非 JSON；这里覆盖“能解析但顶层不是对象”的情况，
+    // 例如用户手改配置成数组、字符串、数字或 null。
+    for (final raw in <String>['[]', '["nope"]', '"nope"', '42', 'null']) {
+      await store.file.writeAsString(raw);
+      final settings = await store.load();
+      expect(
+        settings.defaultColorMode,
+        ScanColorMode.grayscale,
+        reason: 'raw=$raw 应回落灰度',
+      );
+      expect(
+        settings.defaultCropMode,
+        DefaultCropMode.auto,
+        reason: 'raw=$raw 应回落自动裁切',
+      );
+    }
+  });
 }
