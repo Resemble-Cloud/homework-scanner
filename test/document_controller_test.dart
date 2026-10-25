@@ -511,6 +511,49 @@ void main() {
     expect(exporter.calls, 0);
   });
 
+  test('修改默认设置不回溯已有页面，只影响之后入队的页面', () async {
+    final first = await controller.addCapturedPage(fixtureJpegPath());
+    await controller.waitForIdle();
+    final firstDone = controller.pageById(first.id)!;
+    expect(firstDone.colorMode, ScanColorMode.grayscale);
+    expect(firstDone.quadSource, QuadSource.capture);
+    final firstQuad = firstDone.quad;
+    final firstPath = firstDone.processedPath!;
+
+    await controller.updateSettings(
+      const ScanSettings(
+        defaultColorMode: ScanColorMode.blackAndWhite,
+        defaultCropMode: DefaultCropMode.whole,
+      ),
+    );
+
+    // 已完成的页面保留当时的色彩模式、四角与输出文件，也不重新入队。
+    final unchanged = controller.pageById(first.id)!;
+    expect(unchanged.colorMode, ScanColorMode.grayscale);
+    expect(unchanged.quadSource, QuadSource.capture);
+    expect(unchanged.quad, firstQuad);
+    expect(unchanged.processedPath, firstPath);
+    expect(engine.scanCount, 1);
+
+    final second = await controller.addCapturedPage(fixtureJpegPath());
+    await controller.waitForIdle();
+
+    // 新页面按新的默认值入队：黑白 + 整图。具体四角由算法选择，这里只验证
+    // “整图”设置真的生效（fallback 来源 + 合法四角），不与内缩比例绑定。
+    final secondDone = controller.pageById(second.id)!;
+    expect(secondDone.colorMode, ScanColorMode.blackAndWhite);
+    expect(engine.lastOptions?.colorMode, ScanColorMode.blackAndWhite);
+    expect(secondDone.quadSource, QuadSource.fallback);
+    expect(secondDone.quad, hasLength(4));
+
+    // 第一页仍未受设置变更影响。
+    final firstAgain = controller.pageById(first.id)!;
+    expect(firstAgain.colorMode, ScanColorMode.grayscale);
+    expect(firstAgain.quad, firstQuad);
+    expect(firstAgain.processedPath, firstPath);
+    expect(engine.scanCount, 2);
+  });
+
   test('恢复时把中断的 processing 状态重新排队', () async {
     final page = await controller.addCapturedPage(fixtureJpegPath());
     await controller.waitForIdle();
