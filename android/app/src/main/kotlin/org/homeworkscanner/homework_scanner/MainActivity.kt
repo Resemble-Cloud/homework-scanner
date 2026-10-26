@@ -82,7 +82,12 @@ class MainActivity : FlutterActivity() {
             }
             val clear = ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }
             resolver.update(uri, clear, null, null)
-            result.success(mapOf("ok" to true, "savedPath" to "$ALBUM/$safeName"))
+            result.success(
+                mapOf(
+                    "ok" to true,
+                    "savedPath" to "${Environment.DIRECTORY_PICTURES}$ALBUM/$safeName",
+                ),
+            )
         } catch (error: Exception) {
             inserted?.let { uri -> runCatching { resolver.delete(uri, null, null) } }
             result.error("write_failed", error.message ?: "写入相册失败", null)
