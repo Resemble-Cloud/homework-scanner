@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:fairscan_engine/fairscan_engine.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:homework_scanner/main.dart';
 import 'package:homework_scanner/models/scan_document.dart';
@@ -306,6 +307,99 @@ void main() {
       findsNothing,
     );
     expect(find.byType(CircularProgressIndicator), findsNothing);
+  });
+
+  testWidgets('处理中的页面禁用保存图片，完成后可保存处理后路径', (tester) async {
+    const channel = MethodChannel('homework_scanner/gallery');
+    final calls = <MethodCall>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      channel,
+      (call) async {
+        calls.add(call);
+        return <String, Object?>{
+          'ok': true,
+          'savedPath': 'Pictures/作业扫描/ok.jpg',
+        };
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        null,
+      ),
+    );
+
+    // 先在队列空闲时打开文档：openDocument 会 waitForIdle()，而引擎如果此时被
+    // pauseScans 挂起，导航就永远不会完成。所以先打开文档，再暂停引擎加页。
+    await addPages(tester, 1);
+    await pumpApp(tester);
+
+    engine.pauseScans();
+    final page = await tester.runAsync(
+      () => controller.addCapturedPage(fixtureJpegPath()),
+    );
+    await pumpFrames(tester);
+
+    await tester.tap(find.byKey(Key('page-tile-${page!.id}')));
+    await pumpFrames(tester);
+
+    // 还在引擎里，没有处理结果，保存必须是禁用的。
+    expect(
+      controller.pageById(page.id)!.status,
+      PageStatus.processing,
+    );
+    final during = tester.widget<IconButton>(
+      find.byKey(const Key('save-image-button')),
+    );
+    expect(during.onPressed, isNull);
+
+    engine.resumeScans();
+    await tester.runAsync(() => controller.waitForIdle());
+    await pumpFrames(tester);
+
+    final done = controller.pageById(page.id)!;
+    expect(done.isDone, isTrue);
+    final after = tester.widget<IconButton>(
+      find.byKey(const Key('save-image-button')),
+    );
+    expect(after.onPressed, isNotNull);
+
+    await tester.tap(find.byKey(const Key('save-image-button')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(calls, hasLength(1));
+    expect(calls.single.method, 'saveImage');
+    final args = calls.single.arguments! as Map<Object?, Object?>;
+    // 只允许把处理结果交给原生，原图不能进相册。
+    expect(args['path'], done.processedPath);
+    expect(args['path'], isNot(done.originalPath));
+    expect(args['path'], endsWith('.jpg'));
+    expect(args['fileName'], endsWith('.jpg'));
+    expect(args['fileName'].toString(), isNot(contains('/')));
+    expect(find.textContaining('已保存到相册'), findsOneWidget);
+  });
+
+  testWidgets('处理失败的页面禁用保存图片', (tester) async {
+    engine.failScansRemaining = 1;
+    final page = await tester.runAsync(() async {
+      final added = await controller.addCapturedPage(fixtureJpegPath());
+      await controller.waitForIdle();
+      return added;
+    });
+    await pumpApp(tester);
+    await tester.tap(find.byKey(Key('page-tile-${page!.id}')));
+    await pumpFrames(tester);
+
+    final failed = controller.pageById(page.id)!;
+    expect(failed.status, PageStatus.failed);
+    expect(failed.processedPath, isNull);
+    final button = tester.widget<IconButton>(
+      find.byKey(const Key('save-image-button')),
+    );
+    expect(button.onPressed, isNull);
+    expect(find.text('处理失败，原图未修改'), findsOneWidget);
   });
 }
 

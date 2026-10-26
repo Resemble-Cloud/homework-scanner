@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -46,9 +47,23 @@ class FakeScanEngine implements ScanEngine {
   DetectResult detection;
 
   int failScansRemaining = 0;
+
+  /// Parks [scan] until [resumeScans] so a widget test can look at a page that
+  /// is genuinely mid-processing instead of racing the fake engine.
+  Completer<void>? scanGate;
+
   int detectCount = 0;
   int scanCount = 0;
   int initializeCount = 0;
+
+  void pauseScans() => scanGate = Completer<void>();
+
+  void resumeScans() {
+    final gate = scanGate;
+    scanGate = null;
+    if (gate != null && !gate.isCompleted) gate.complete();
+  }
+
   int activeScans = 0;
   int maxActiveScans = 0;
   final List<ScanOptions> scanOptions = <ScanOptions>[];
@@ -110,6 +125,8 @@ class FakeScanEngine implements ScanEngine {
     lastOptions = options;
     scanOptions.add(options);
     try {
+      final gate = scanGate;
+      if (gate != null) await gate.future;
       if (processingDelay > Duration.zero) {
         await Future<void>.delayed(processingDelay);
       }
