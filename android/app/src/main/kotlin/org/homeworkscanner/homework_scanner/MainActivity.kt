@@ -81,7 +81,13 @@ class MainActivity : FlutterActivity() {
                 return
             }
             val clear = ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }
-            resolver.update(uri, clear, null, null)
+            if (resolver.update(uri, clear, null, null) <= 0) {
+                // The row is still pending, so no gallery app can see it. Drop it
+                // and report a failure instead of a success the user cannot find.
+                runCatching { resolver.delete(uri, null, null) }
+                result.error("commit_failed", "相册条目未能提交", null)
+                return
+            }
             result.success(
                 mapOf(
                     "ok" to true,

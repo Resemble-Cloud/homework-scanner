@@ -401,6 +401,38 @@ void main() {
     expect(button.onPressed, isNull);
     expect(find.text('处理失败，原图未修改'), findsOneWidget);
   });
+
+  testWidgets('重处理失败的页面禁用保存图片，不把上一次结果当本次输出', (tester) async {
+    final added = (await addPages(tester, 1)).single;
+    // addPages 返回的是入队时的页面快照，完成状态要从 controller 现取。
+    final page = controller.pageById(added.id)!;
+    final stalePath = page.processedPath;
+    expect(page.isDone, isTrue);
+    expect(stalePath, isNotNull);
+
+    // 已完成页切换色彩会重新入队；让这一轮处理失败。失败路径保留旧结果
+    // （页面仍把它显示在原图上），但那份图属于旧设置，不能再写入相册。
+    engine.failScansRemaining = 1;
+    await tester.runAsync(() async {
+      await controller.setColorMode(page.id, ScanColorMode.color);
+      await controller.waitForIdle();
+    });
+
+    final failed = controller.pageById(page.id)!;
+    expect(failed.status, PageStatus.failed);
+    expect(failed.isDone, isFalse);
+    expect(failed.processedPath, stalePath);
+
+    await pumpApp(tester);
+    await tester.tap(find.byKey(Key('page-tile-${page.id}')));
+    await pumpFrames(tester);
+
+    expect(find.text('处理失败，原图未修改'), findsOneWidget);
+    final button = tester.widget<IconButton>(
+      find.byKey(const Key('save-image-button')),
+    );
+    expect(button.onPressed, isNull);
+  });
 }
 
 /// Test-only settings store: records the last written [ScanSettings] without

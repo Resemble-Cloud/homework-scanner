@@ -181,10 +181,11 @@ class _PageDetailScreenState extends State<PageDetailScreen> {
   bool _busy(ScanPage page) =>
       page.status == PageStatus.processing || page.status == PageStatus.queued;
 
-  /// Only a finished page has an output file; queued, processing and failed
-  /// pages still hold nothing but the untouched original.
-  bool _saveEnabled(ScanPage page) =>
-      !_saving && !_busy(page) && page.processedPath != null;
+  /// Only a finished page may be written to the gallery. A failed page can
+  /// still hold the previous run's file (the retry path keeps it on screen),
+  /// but that image belongs to the old settings, so saving it would put a
+  /// stale result in the gallery under the current page's name.
+  bool _saveEnabled(ScanPage page) => !_saving && page.isDone;
 
   Future<void> _saveImage(ScanPage page, int number) async {
     final source = page.processedPath;
