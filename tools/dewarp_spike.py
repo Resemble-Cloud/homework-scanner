@@ -71,20 +71,29 @@ class Cylinder:
     cx: float
     cy: float
 
-    def _theta(self, dx: np.ndarray) -> np.ndarray:
-        return np.arcsin(np.clip(dx / self.R, -0.985, 0.985))
+    def _angle_on_flat(self, x: np.ndarray) -> np.ndarray:
+        """平面上的**弧长** → 圆心角：弧长 s = R * θ，所以 θ = dx / R。
+
+        这里绝对不能取 arcsin：arcsin(dx/R) 再 sin() 会相互抵消，forward
+        退化成正 x 方向的恒等映射，水平压缩就再也回不来了。
+        """
+        return np.clip((x - self.cx) / self.R, -0.985, 0.985)
+
+    def _angle_in_photo(self, bx: np.ndarray) -> np.ndarray:
+        """弯曲照片上的投影坐标 → 圆心角（即 `forward` 的逆）。"""
+        return np.arcsin(np.clip((bx - self.cx) / self.R, -0.985, 0.985))
 
     def _scale(self, th: np.ndarray) -> np.ndarray:
         return self.focal / (self.focal + self.R * (1.0 - np.cos(th)))
 
     def forward(self, x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """平面 → 弯曲照片。"""
-        th = self._theta(x - self.cx)
+        th = self._angle_on_flat(x)
         return self.cx + self.R * np.sin(th), self.cy + (y - self.cy) * self._scale(th)
 
     def inverse(self, bx: np.ndarray, by: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """弯曲照片 → 平面。"""
-        th = self._theta(bx - self.cx)
+        th = self._angle_in_photo(bx)
         return self.cx + self.R * th, self.cy + (by - self.cy) / self._scale(th)
 
     def bend(self, img: np.ndarray) -> np.ndarray:
@@ -119,6 +128,63 @@ def canvas_grid() -> tuple[np.ndarray, np.ndarray]:
     return np.meshgrid(
         np.arange(CANVAS_W, dtype=np.float64), np.arange(CANVAS_H, dtype=np.float64)
     )
+
+
+# --------------------------------------------------------------------------- #
+# 模型自检
+# --------------------------------------------------------------------------- #
+def selftest(strict: bool = True) -> bool:
+    """圆柱模型的自检，必须先于任何指标跑完。
+
+    第一版 `forward` 用 arcsin 求角、再 sin 回投影，两者相互抵消，导致
+    `forward` 在 x 方向退化成恒等映射：于是「真值位移场」和方法 B 的位移场
+    都少了水平分量，位移误差只剩垂直一项，PSNR 也把水平压缩的伤害藏了起来
+    （当时方法 B 的 PSNR 增益之所以看着接近理论上限，是因为两者用的是同一个
+    错误映射，属于循环验证）。这个自检就是防止它再回来。
+
+    检查三件事：
+      1. forward ∘ inverse 和 inverse ∘ forward 都接近恒等（像素尺度 1e-6）；
+      2. `forward` 确实产生水平压缩，且在整 z 弧长上不是恒等映射；
+      3. 压缩量等于解析值 R * (sin(θ) - θ)。
+    """
+    print("模型自检：forward / inverse 必须互为逆，且 forward 不能是恒等映射")
+    ok = True
+    for R in (380.0, 600.0, 900.0, 3000.0):
+        cyl = Cylinder(R, TRUE_FOCAL, TRUE_CX, TRUE_CY)
+        # 只在模型有效的弧度内取样（超过 0.985 会被 clip，逆映射不唯一）
+        th = np.linspace(-0.9, 0.9, 401)
+        x = cyl.cx + R * th
+        y = np.full_like(x, cyl.cy + 180.0)
+        fx, fy = cyl.forward(x, y)
+        bx, by = cyl.inverse(fx, fy)
+        e_flat = float(np.max(np.hypot(bx - x, by - y)))
+        ux, uy = cyl.forward(bx, by)
+        e_photo = float(np.max(np.hypot(ux - fx, uy - fy)))
+        # 水平压缩量：以弧长为参照的解析值
+        expected = R * (np.sin(th) - th)
+        e_compress = float(np.max(np.abs((fx - x) - expected)))
+        # 恒等检测：弯曲模型在边缘必须真的把 x 拉回来
+        edge_shrink = float(abs(fx[0] - x[0]))
+        checks = {
+            "roundtrip 平面→照片→平面": e_flat,
+            "roundtrip 照片→平面→照片": e_photo,
+            "水平压缩量 vs R*(sinθ-θ)": e_compress,
+        }
+        bad = [name for name, err in checks.items() if err > 1e-6]
+        if edge_shrink < 1.0:
+            bad.append("forward 退化成恒等映射")
+        status = "OK" if not bad else f"失败（{'; '.join(bad)}）"
+        if bad:
+            ok = False
+        print(
+            f"  R={R:6.0f}px  逆映射误差 {e_flat:.2e} / {e_photo:.2e}  "
+            f"压缩量误差 {e_compress:.2e}  边缘压缩 {edge_shrink:6.1f}px  {status}"
+        )
+    if ok:
+        print("  自检通过：forward 含水平压缩，且与 inverse 互为逆。")
+    elif strict:
+        raise SystemExit("模型自检失败：修好 Cylinder.forward 再跑指标，否则结论无效。")
+    return ok
 
 
 # --------------------------------------------------------------------------- #
@@ -565,6 +631,23 @@ def run_case(
     # 参照：完全不校正时的位移（= 弯曲本身的位移量），用来衡量两个方法各自消掉了多少
     med_id, p95_id = displacement_error((gx, gy), truth_map, region)
 
+    # 理论对照：用**真参数**分别做全反解、只修垂直、只修水平，为两个方法的增益
+    # 提供可复现的天花板（而不是像上一轮那样在临时脚本里手算，口径对不上）。
+    theory: dict[str, dict[str, float]] = {}
+    for key, maps in (
+        ("full", truth_map),
+        ("vertical", (gx, truth_map[1])),
+        ("horizontal", (truth_map[0], gy)),
+    ):
+        img = sample(bent, maps[0], maps[1])
+        med, p95 = displacement_error(maps, truth_map, region)
+        theory[key] = {
+            "psnr": psnr(gray(img), gt_gray, region),
+            "ssim": ssim(gray(img), gt_gray, region),
+            "med": med,
+            "p95": p95,
+        }
+
     result = {
         "name": name,
         "flat": flat,
@@ -596,11 +679,22 @@ def run_case(
         "ms_a": a.ms,
         "ms_b": b.ms,
     }
+    for key, values in theory.items():
+        result[f"psnr_th_{key}"] = values["psnr"]
+        result[f"ssim_th_{key}"] = values["ssim"]
+        result[f"med_th_{key}"] = values["med"]
+        result[f"p95_th_{key}"] = values["p95"]
     print(
         f"{name:24s} PSNR before {result['psnr_bent']:5.2f} | A {result['psnr_a']:5.2f} "
         f"SSIM {result['ssim_a']:.4f} 直 {result['straight_a']:5.2f}px({bands_a}带) "
         f"| B {result['psnr_b']:5.2f} SSIM {result['ssim_b']:.4f} "
         f"直 {result['straight_b']:5.2f}px({bands_b}带) | GT 直 {straight_gt:5.2f}px"
+    )
+    print(
+        f"{'':24s} 理论（真参数）PSNR 全解 {theory['full']['psnr']:5.2f} "
+        f"只垂直 {theory['vertical']['psnr']:5.2f} 只水平 {theory['horizontal']['psnr']:5.2f} "
+        f"| 位移中位 全 {theory['full']['med']:.2f} 竖 {theory['vertical']['med']:.2f} "
+        f"横 {theory['horizontal']['med']:.2f} 不校正 {med_id:.2f}px"
     )
     print(f"{'':24s} A: {a.note}")
     print(f"{'':24s} B: {b.note}")
@@ -633,6 +727,10 @@ def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # 先验模型，再算指标：模型错了的话后面所有数字都没意义。
+    selftest()
+    print("-" * 130)
 
     rng = np.random.default_rng(11)
     text_page, baselines = draw_text_content(paper_page(), rng)
@@ -681,6 +779,9 @@ def main() -> None:
                 "psnr_a", "ssim_a", "straight_a", "bands_a", "med_err_a", "p95_err_a", "ms_a",
                 "psnr_b", "ssim_b", "straight_b", "bands_b", "med_err_b", "p95_err_b", "ms_b",
                 "med_err_identity", "p95_err_identity",
+                "psnr_th_full", "ssim_th_full", "med_th_full", "p95_th_full",
+                "psnr_th_vertical", "ssim_th_vertical", "med_th_vertical", "p95_th_vertical",
+                "psnr_th_horizontal", "ssim_th_horizontal", "med_th_horizontal", "p95_th_horizontal",
                 "straight_gt", "bands_gt", "note_a", "note_b",
             ]
         )
@@ -697,6 +798,12 @@ def main() -> None:
                     f"{r['straight_b']:.2f}", f"{r['bands_b']:.0f}",
                     f"{r['med_b']:.2f}", f"{r['p95_b']:.2f}", f"{r['ms_b']:.0f}",
                     f"{r['med_id']:.2f}", f"{r['p95_id']:.2f}",
+                    f"{r['psnr_th_full']:.2f}", f"{r['ssim_th_full']:.4f}",
+                    f"{r['med_th_full']:.2f}", f"{r['p95_th_full']:.2f}",
+                    f"{r['psnr_th_vertical']:.2f}", f"{r['ssim_th_vertical']:.4f}",
+                    f"{r['med_th_vertical']:.2f}", f"{r['p95_th_vertical']:.2f}",
+                    f"{r['psnr_th_horizontal']:.2f}", f"{r['ssim_th_horizontal']:.4f}",
+                    f"{r['med_th_horizontal']:.2f}", f"{r['p95_th_horizontal']:.2f}",
                     f"{r['straight_gt']:.2f}", f"{r['bands_gt']:.0f}",
                     r["note_a"], r["note_b"],
                 ]
@@ -705,4 +812,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    # `--selftest` 只跑圆柱模型自检，几秒钟（完整流程要一分钟上下）。
+    if "--selftest" in sys.argv:
+        sys.exit(0 if selftest() else 1)
     main()
