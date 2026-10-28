@@ -2,13 +2,15 @@ import 'dart:io';
 
 import 'package:fairscan_engine/fairscan_engine.dart';
 import 'package:flutter/material.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../models/scan_document.dart';
 import '../../services/document_controller.dart';
+import '../../services/gallery_save_service.dart';
 import '../../widgets/quad_editor_sheet.dart';
 import '../camera/camera_capture_screen.dart';
 
-class PageDetailScreen extends StatelessWidget {
+class PageDetailScreen extends StatefulWidget {
   const PageDetailScreen({
     super.key,
     required this.controller,
@@ -17,6 +19,17 @@ class PageDetailScreen extends StatelessWidget {
 
   final DocumentController controller;
   final String pageId;
+
+  @override
+  State<PageDetailScreen> createState() => _PageDetailScreenState();
+}
+
+class _PageDetailScreenState extends State<PageDetailScreen> {
+  /// Blocks a double tap from inserting the same image into the gallery twice.
+  bool _saving = false;
+
+  DocumentController get controller => widget.controller;
+  String get pageId => widget.pageId;
 
   @override
   Widget build(BuildContext context) {
@@ -48,6 +61,20 @@ class PageDetailScreen extends StatelessWidget {
           appBar: AppBar(
             title: Text('第 $number 页'),
             actions: [
+              IconButton(
+                key: const Key('save-image-button'),
+                tooltip: '保存图片',
+                onPressed: _saveEnabled(page)
+                    ? () => _saveImage(page, number)
+                    : null,
+                icon: _saving
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.save_alt_outlined),
+              ),
               IconButton(
                 tooltip: '删除此页',
                 onPressed: () => _confirmDelete(context, page),
@@ -153,6 +180,64 @@ class PageDetailScreen extends StatelessWidget {
 
   bool _busy(ScanPage page) =>
       page.status == PageStatus.processing || page.status == PageStatus.queued;
+
+  /// Only a finished page may be written to the gallery. A failed page can
+  /// still hold the previous run's file (the retry path keeps it on screen),
+  /// but that image belongs to the old settings, so saving it would put a
+  /// stale result in the gallery under the current page's name.
+  bool _saveEnabled(ScanPage page) => !_saving && page.isDone;
+
+  Future<void> _saveImage(ScanPage page, int number) async {
+    final source = page.processedPath;
+    if (source == null || _saving) return;
+    setState(() => _saving = true);
+    final fileName = GallerySaveService.fileNameFor(source, number);
+    GallerySaveResult result;
+    try {
+      result = await GallerySaveService().saveImage(source, fileName: fileName);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      _snack(context, '保存失败：$error');
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _saving = false);
+    if (result.ok) {
+      _snack(context, '已保存到相册：${result.savedPath}');
+    } else if (result.needsShareSheet) {
+      await _shareToSheet(source, fileName);
+    } else {
+      _snack(context, '保存失败：${result.message ?? result.code ?? '未知错误'}');
+    }
+  }
+
+  /// Android 9 and below have no permission-free gallery write, so the file
+  /// goes through the system share sheet and the snackbar says why.
+  Future<void> _shareToSheet(String source, String fileName) async {
+    try {
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [
+            XFile(
+              source,
+              mimeType: GallerySaveService.mimeTypeFor(source),
+              name: fileName,
+            ),
+          ],
+          subject: '作业扫描图片',
+        ),
+      );
+      if (mounted) {
+        _snack(
+          context,
+          '本机系统不支持免权限写入相册，已打开系统分享面板，请选择“保存到相册”或“保存到文件”',
+        );
+      }
+    } catch (error) {
+      if (mounted) _snack(context, '保存失败：无法打开系统分享面板（$error）');
+    }
+  }
 
   Future<void> _setMode(
     BuildContext context,
